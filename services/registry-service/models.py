@@ -125,6 +125,23 @@ class Plot(BaseModel):
     lon: float
 
 
+class Crop(BaseModel):
+    id: str
+    name: str
+
+
+class Soil(BaseModel):
+    id: str
+    name: str
+    available_water_mm_per_m: int
+
+
+class Emitter(BaseModel):
+    id: str
+    name: str
+    flow_lph: float
+
+
 def canonical_uuid(value: str) -> str | None:
     """Return the lowercase canonical form of a UUID of any version, or None."""
     try:
