@@ -128,3 +128,35 @@ and why.
 
   The current date comes from one injectable function, so the tests are
   deterministic and do not depend on when they run.
+
+## 14. Which database errors return 503
+- **Agent suggested:** Map every `sqlite3.OperationalError` to `503`, since a
+  missing file and a lock both raise it.
+- **I decided:** 503 UNAVAILABLE with Retry-After: 5 only for errors in the
+  database's environment: the file cannot be opened, it is locked, the disk fails,
+  or the file is damaged. Classified by SQLite error code, not message text.
+  Errors that mean our code is wrong ("no such table", "no such column",
+  syntax errors) are treated as bugs (500).
+- **Why:** 503 tells the client "not your fault, try again later". That is true
+  when the database is locked or missing and can be fixed by waiting or by
+  restoring the file, without a code change. A broken query will fail on every
+  retry, so returning 503 would invite retries that can never succeed and would
+  hide a bug as an outage. SQLite reports both kinds as OperationalError, so the
+  exception type alone cannot tell them apart. 5 seconds is short enough for a
+  lock to clear and avoids clients hammering the service.
+
+## 15. Unexpected errors: 500 with code UNAVAILABLE
+- **Agent suggested:** Leave unhandled errors to the framework's default
+  plain-text 500, as in the earlier parts.
+- **I decided:** Any unhandled exception returns 500 as problem+json with
+  code UNAVAILABLE, a generic detail, and no Retry-After. The full exception is
+  logged on the server only.
+- **Why:** FR-1.4 requires every error to be problem+json with one of four codes,
+  and none means "server bug". Alternatives rejected: the framework's plain-text
+  500 breaks the format; omitting `code` breaks "a stable code"; a new INTERNAL
+  code is outside the spec's closed list, so clients built on four codes would not
+  know it; returning 503 for bugs would disguise them as temporary outages.
+  Keeping status 500 stays honest about what happened, while UNAVAILABLE tells
+  the client "the service could not serve you, and it is not your fault".
+  Retry-After is omitted because a retry is not expected to help. The detail is
+  generic so internal details (SQL, table names, paths) never leak.

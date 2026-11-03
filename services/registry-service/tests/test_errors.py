@@ -80,9 +80,10 @@ def test_unique_violation_is_409(probe, db_file):
 
 
 def test_foreign_key_violation_is_not_mapped_globally(probe):
+    # Not 422 or 409: an FK failure no endpoint handled falls through to the 500 safety net.
     response = probe.get("/foreign-key")
-    assert response.status_code == 500
-    assert response.headers["content-type"] != "application/problem+json"
+    assert_problem(response, 500, "UNAVAILABLE")
+    assert "retry-after" not in response.headers
 
 
 def test_unknown_route_is_404(client):
