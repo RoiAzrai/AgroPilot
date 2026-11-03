@@ -1,11 +1,12 @@
 from fastapi import FastAPI
 
 from errors import register_error_handlers
-from routers import farms
+from routers import farms, plots
 
 app = FastAPI(title="AgroPilot registry-service", version="0.1.0")
 register_error_handlers(app)
 app.include_router(farms.router)
+app.include_router(plots.router)
 
 
 @app.get("/health")
