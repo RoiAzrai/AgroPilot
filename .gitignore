@@ -25,3 +25,6 @@ htmlcov/
 .idea/
 .vscode/*
 !.vscode/launch.json
+
+# Local databases
+registry.db
