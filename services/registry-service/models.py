@@ -1,6 +1,6 @@
 import re
 from collections.abc import Mapping
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -11,12 +11,34 @@ from pydantic import (
     BaseModel,
     BeforeValidator,
     ConfigDict,
+    Field,
     StringConstraints,
     Strict,
     ValidationError,
 )
+from pydantic_core import PydanticCustomError
 
 _ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+# The earliest time zone on Earth: its date is the latest date that has started anywhere.
+UTC_PLUS_14 = timezone(timedelta(hours=14))
+
+
+def _utc_now() -> datetime:
+    """The only place that reads the clock; tests monkeypatch it."""
+    return datetime.now(timezone.utc)
+
+
+def latest_date_on_earth() -> date:
+    """The current date in UTC+14."""
+    return _utc_now().astimezone(UTC_PLUS_14).date()
+
+
+def _not_in_future(value: date) -> date:
+    # Looked up at call time, so tests can monkeypatch latest_date_on_earth.
+    if value > latest_date_on_earth():
+        raise PydanticCustomError("date_in_future", "cannot be in the future")
+    return value
 
 
 def _iso_date_string(value: Any) -> Any:
@@ -58,19 +80,19 @@ class Farm(BaseModel):
     name: str
 
 
-# The single definition of a plot's fields. FR-1.3 rules attach here.
+# The single place for a plot's rules (FR-1.3). PATCH applies them through merge().
 class PlotCreate(RequestBody):
     farm_id: UuidString
     name: Name
-    area_m2: Number
+    area_m2: Annotated[Number, Field(gt=0)]
     crop_id: str
-    planting_date: IsoDate
+    planting_date: Annotated[IsoDate, AfterValidator(_not_in_future)]
     soil_id: str
-    row_spacing_m: Number
-    emitter_spacing_m: Number
+    row_spacing_m: Annotated[Number, Field(gt=0)]
+    emitter_spacing_m: Annotated[Number, Field(gt=0)]
     emitter_id: str
-    lat: Number
-    lon: Number
+    lat: Annotated[Number, Field(ge=-90, le=90)]
+    lon: Annotated[Number, Field(ge=-180, le=180)]
 
 
 class PlotUpdate(RequestBody):
@@ -87,8 +109,20 @@ class PlotUpdate(RequestBody):
     lon: Number | None = None
 
 
-class Plot(PlotCreate):
+# Response shape only: stored plots are not re-validated against the input rules.
+class Plot(BaseModel):
     id: UUID
+    farm_id: UUID
+    name: str
+    area_m2: float
+    crop_id: str
+    planting_date: date
+    soil_id: str
+    row_spacing_m: float
+    emitter_spacing_m: float
+    emitter_id: str
+    lat: float
+    lon: float
 
 
 def canonical_uuid(value: str) -> str | None:

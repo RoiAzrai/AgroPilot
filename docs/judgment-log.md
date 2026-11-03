@@ -103,3 +103,28 @@ and why.
 - **I decided:** Keep `httpx` for now.
 - **Why:** The tests pass, and changing a test dependency mid-task does not serve
   the spec. Noted as a known limitation in the PR.
+
+## 12. Defining "today" for planting_date
+- **Agent suggested:** Nothing specific; the spec says only that `planting_date`
+  must not be in the future, without saying in which time zone.
+- **I decided:** A date counts as "in the future" only if it has not started
+  anywhere on Earth. The check compares against the current date in UTC+14, the
+  earliest time zone.
+- **Why:** The goal is that no farmer who enters a true planting date is ever
+  rejected, wherever the farm is. We accept the trade-off that in western time
+  zones a date up to one day ahead can pass (up to two days, for about an hour a
+  day, only on a few Pacific islands at UTC-11/-12), while a clearly future date
+  is still rejected. Alternatives rejected:
+  - UTC: wrong in both directions. East of UTC it blocks real entries after local
+    midnight (in Israel at 00:30 it is already the next day, while UTC is still
+    on the previous day); west of UTC it accepts tomorrow's date in the evening.
+  - Server local time: the result would depend on the machine the service runs
+    on (laptop vs. cloud).
+  - Asia/Jerusalem: correct only for Israel; AgroPilot should not assume all
+    farms are there.
+  - A time zone per farm: the most precise option, but it needs a new field, and
+    the spec does not allow adding fields or changing the schema. Deriving the
+    time zone from the plot's lat/lon would need a new dependency for one rule.
+
+  The current date comes from one injectable function, so the tests are
+  deterministic and do not depend on when they run.
