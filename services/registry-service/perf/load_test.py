@@ -10,6 +10,7 @@ Usage, from services/registry-service:
 
 import argparse
 import asyncio
+import contextlib
 import csv
 import json
 import math
@@ -18,6 +19,7 @@ import random
 import statistics
 import subprocess
 import sys
+import time
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -57,6 +59,12 @@ EXIT_SETUP_ERROR = 3
 LITTLE_TOLERANCE = 0.05
 STALL_LAG_MS = 100
 
+HEARTBEAT_INTERVAL_S = 1.0
+SUSPEND_CLOCK_GAP_S = 1.0  # wall clock ran ahead of the monotonic clock by more than this
+SUSPEND_HEARTBEAT_GAP_S = 2.0  # or no heartbeat for more than this much wall time
+
+BOOTSTRAP_RESAMPLES = 2000
+
 
 class SetupError(Exception):
     """The run could not start, e.g. the service is down or a list is empty."""
@@ -78,6 +86,12 @@ class Result:
     ok: bool
     status: int | None
     error: str | None
+
+
+@dataclass(frozen=True)
+class Heartbeat:
+    mono: float  # seconds after the start of the run, monotonic clock
+    wall: float  # Unix time, wall clock
 
 
 # --- Schedule -------------------------------------------------------------------
@@ -154,19 +168,38 @@ async def send(client: httpx.AsyncClient, arrival: Arrival, t0: float) -> Result
     return Result(arrival.endpoint, arrival.t, sent, done, error is None, status, error)
 
 
+async def record_heartbeats(t0: float, beats: list[Heartbeat]) -> None:
+    """Record both clocks about once per second, until cancelled.
+
+    A suspended VM stops its monotonic clock but not the wall clock, so across a
+    suspension the wall clock jumps ahead. Comparing the two is the only way to see it.
+    """
+    loop = asyncio.get_running_loop()
+    while True:
+        beats.append(Heartbeat(loop.time() - t0, time.time()))
+        await asyncio.sleep(HEARTBEAT_INTERVAL_S)
+
+
 async def run_load(
     client: httpx.AsyncClient, schedule: list[Arrival]
-) -> list[Result]:
+) -> tuple[list[Result], list[Heartbeat]]:
     """Launch each request at its scheduled time and never wait for a response first."""
     loop = asyncio.get_running_loop()
     t0 = loop.time()
+    beats: list[Heartbeat] = []
+    heartbeat = asyncio.create_task(record_heartbeats(t0, beats))
     tasks = []
     for arrival in schedule:
         delay = t0 + arrival.t - loop.time()
         if delay > 0:
             await asyncio.sleep(delay)
         tasks.append(asyncio.create_task(send(client, arrival, t0)))
-    return list(await asyncio.gather(*tasks))
+    results = list(await asyncio.gather(*tasks))
+    heartbeat.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await heartbeat
+    beats.append(Heartbeat(loop.time() - t0, time.time()))
+    return results, beats
 
 
 # --- Statistics -----------------------------------------------------------------
@@ -190,6 +223,33 @@ def distribution_ms(seconds: list[float]) -> dict[str, float | None]:
         "max": max(ms) if ms else None,
         "mean": statistics.fmean(ms) if ms else None,
     }
+
+
+def bootstrap_ci(
+    values: list[float], rng: random.Random, p: float = 95,
+    resamples: int = BOOTSTRAP_RESAMPLES, level: float = 95,
+) -> list[float] | None:
+    """Percentile bootstrap confidence interval for the p-th percentile.
+
+    Resample the values with replacement, take the nearest-rank p-th percentile of
+    each resample, and keep the middle `level`% of those estimates. It covers
+    sampling noise only: requests are treated as independent, so a change in the
+    machine's state during the run is not part of the interval.
+    """
+    if not values:
+        return None
+    estimates = sorted(percentile(rng.choices(values, k=len(values)), p) for _ in range(resamples))
+    tail = (100 - level) / 2
+    return [percentile(estimates, tail), percentile(estimates, 100 - tail)]
+
+
+def add_p95_ci(rows: dict[str, dict], measured: list[Result], seed: int) -> None:
+    """Attach a p95 [low, high] interval to every latency row, from its own random stream."""
+    rng = random.Random(f"{seed}:bootstrap")
+    for name in rows:
+        group = measured if name == "OVERALL" else [r for r in measured if r.endpoint == name]
+        latencies = [(r.done - r.scheduled) * 1000 for r in group if r.ok]
+        rows[name]["latency_ms"]["p95_ci"] = bootstrap_ci(latencies, rng)
 
 
 def endpoint_row(results: list[Result]) -> dict:
@@ -316,6 +376,33 @@ def find_stalls(results: list[Result], threshold_ms: float = STALL_LAG_MS) -> li
     return stalls
 
 
+def detect_suspensions(beats: list[Heartbeat], run_end_s: float) -> list[dict]:
+    """Find periods where the VM was suspended: between two heartbeats, the wall clock
+    advanced more than the monotonic clock by over 1 s, or no heartbeat came for over
+    2 s of wall time. `in_run` is true when it started during warm-up or measurement.
+    """
+    found = []
+    for before, after in zip(beats, beats[1:]):
+        wall_gap = after.wall - before.wall
+        unaccounted = wall_gap - (after.mono - before.mono)
+        if unaccounted > SUSPEND_CLOCK_GAP_S:
+            kind, duration = "clock_gap", unaccounted
+        elif wall_gap > SUSPEND_HEARTBEAT_GAP_S:
+            kind, duration = "no_heartbeat", wall_gap
+        else:
+            continue
+        found.append({
+            "start_s": before.mono,
+            "wall_start": datetime.fromtimestamp(before.wall, timezone.utc).isoformat(
+                timespec="seconds"
+            ),
+            "duration_s": duration,
+            "kind": kind,
+            "in_run": 0 <= before.mono < run_end_s,
+        })
+    return found
+
+
 def write_timeline(path: Path, results: list[Result], start: float, end: float) -> None:
     """One raw row per request, times in seconds from the start of the run."""
     with path.open("w", newline="") as file:
@@ -332,7 +419,9 @@ def write_timeline(path: Path, results: list[Result], start: float, end: float) 
 # --- Verdict, metadata and report -----------------------------------------------
 
 
-def verdict(rows: dict[str, dict], lag: dict, threshold_ms: float) -> tuple[int, list[str]]:
+def verdict(
+    rows: dict[str, dict], lag: dict, threshold_ms: float, suspensions: list[dict] = ()
+) -> tuple[int, list[str]]:
     """Pass only if every endpoint meets the p95 threshold with no errors on a valid run."""
     reasons = []
     for name, row in rows.items():
@@ -343,14 +432,29 @@ def verdict(rows: dict[str, dict], lag: dict, threshold_ms: float) -> tuple[int,
             reasons.append(f"{name}: no successful requests")
         elif p95 > threshold_ms:
             reasons.append(f"{name}: p95 {p95:.1f} ms > {threshold_ms:g} ms")
+    invalid = [
+        f"INVALID: VM suspended for {s['duration_s']:.1f} s at {s['start_s']:.1f} s into the "
+        f"run (wall {s['wall_start']}); the monotonic clock stopped, so timings around it "
+        "cannot be trusted"
+        for s in suspensions if s["in_run"]
+    ]
     if not lag["valid"]:
-        reasons.insert(
+        invalid.insert(
             0,
             f"INVALID: generator lag p99 {lag['p99_ms']} ms > {lag['bound_ms']:g} ms "
             "(the load generator, not the server, was the bottleneck)",
         )
-        return EXIT_INVALID, reasons
+    if invalid:
+        return EXIT_INVALID, invalid + reasons
     return (EXIT_NFR_FAILED, reasons) if reasons else (EXIT_PASS, [])
+
+
+def ci_upper_above(rows: dict[str, dict], threshold_ms: float) -> list[str]:
+    """Endpoints whose upper p95 CI bound is above the threshold (empty: all within)."""
+    return [
+        name for name, row in rows.items()
+        if row["latency_ms"].get("p95_ci") is None or row["latency_ms"]["p95_ci"][1] > threshold_ms
+    ]
 
 
 def git_commit() -> str:
@@ -407,22 +511,27 @@ async def measure(args: argparse.Namespace) -> tuple[dict, list[Result]]:
         schedule = build_schedule(
             args.rate, args.warmup + args.duration, args.arrival, args.seed, ids
         )
-        results = await run_load(client, schedule)
+        results, beats = await run_load(client, schedule)
 
     start, end = args.warmup, args.warmup + args.duration
     measured = [r for r in results if start <= r.scheduled < end]
     rows = summarize(measured)
+    add_p95_ci(rows, measured, args.seed)
     arrivals = arrival_stats(measured, args.duration)
     lag = lag_stats(measured, args.max_lag_ms)
     little = littles_law(measured, start, end)
     rho = utilization(arrivals["achieved_rate"], rows["OVERALL"]["service_ms"]["mean"])
-    exit_code, reasons = verdict(rows, lag, args.threshold_ms)
+    suspensions = detect_suspensions(beats, end)
+    exit_code, reasons = verdict(rows, lag, args.threshold_ms, suspensions)
     report = {
         "metadata": run_metadata(args, started_at),
         "endpoints": rows,
+        "ci_upper_above_threshold": ci_upper_above(rows, args.threshold_ms),
         "errors_by_type": errors_by_type(measured),
         # Over the whole run, warm-up included: a stall there still says something about the machine.
         "stalls": find_stalls(results),
+        "suspensions": suspensions,
+        "heartbeats": len(beats),
         "checks": {
             "arrivals": arrivals,
             "generator_lag": lag,
@@ -442,16 +551,26 @@ def _fmt(value: float | None, digits: int = 1) -> str:
     return "-" if value is None else f"{value:.{digits}f}"
 
 
+def format_p95_ci(stats: dict) -> str:
+    ci = stats.get("p95_ci")
+    return _fmt(stats["p95"]) + (f" [{ci[0]:.1f}, {ci[1]:.1f}]" if ci else "")
+
+
 def format_table(rows: dict[str, dict], key: str) -> list[str]:
+    with_ci = key == "latency_ms"
+    p95_head = "p95 [95% CI]" if with_ci else "p95"
+    p95_width = 22 if with_ci else 8
     lines = [
-        f"{'endpoint':<15}{'requests':>9}{'errors':>7}"
-        f"{'p50':>8}{'p95':>8}{'p99':>8}{'max':>8}{'mean':>8}"
+        f"{'endpoint':<15}{'requests':>9}{'errors':>7}{'p50':>8}{p95_head:>{p95_width}}"
+        f"{'p99':>8}{'max':>8}{'mean':>8}"
     ]
     for name, row in rows.items():
         stats = row[key]
+        p95 = format_p95_ci(stats) if with_ci else _fmt(stats["p95"])
         lines.append(
-            f"{name:<15}{row['requests']:>9}{row['errors']:>7}"
-            + "".join(f"{_fmt(stats[k]):>8}" for k in ("p50", "p95", "p99", "max", "mean"))
+            f"{name:<15}{row['requests']:>9}{row['errors']:>7}{_fmt(stats['p50']):>8}"
+            f"{p95:>{p95_width}}"
+            + "".join(f"{_fmt(stats[k]):>8}" for k in ("p99", "max", "mean"))
         )
     return lines
 
@@ -505,6 +624,12 @@ def format_report(report: dict) -> str:
     lines += [f"  {key:<13}{value}" for key, value in meta.items()]
     lines += ["", "Latency from scheduled send time (ms) - used for the verdict"]
     lines += format_table(report["endpoints"], "latency_ms")
+    above = report["ci_upper_above_threshold"]
+    lines.append(
+        f"Info: upper p95 CI bound <= {meta['threshold_ms']:g} ms for every endpoint: "
+        + ("yes" if not above else f"no ({', '.join(above)})")
+        + ". The verdict uses the point p95."
+    )
     lines += ["", "Service time from actual send time (ms)"]
     lines += format_table(report["endpoints"], "service_ms")
     errors = report["errors_by_type"]
@@ -516,6 +641,16 @@ def format_report(report: dict) -> str:
         f"requests {s['requests']:4}  max lag {s['max_lag_ms']:8.1f} ms  "
         f"max service {s['max_service_ms']:8.1f} ms"
         for s in report["stalls"]
+    ] or ["  none"]
+    lines += [
+        "",
+        f"Suspensions: wall clock ran ahead of the monotonic clock "
+        f"({report['heartbeats']} heartbeats)",
+    ]
+    lines += [
+        f"  at {s['start_s']:8.2f} s (wall {s['wall_start']})  lasted {s['duration_s']:8.1f} s  "
+        f"{s['kind']}  " + ("INSIDE the run" if s["in_run"] else "outside the run")
+        for s in report["suspensions"]
     ] or ["  none"]
     lines += ["", "Queueing checks"] + interpret(report)
     result = report["verdict"]

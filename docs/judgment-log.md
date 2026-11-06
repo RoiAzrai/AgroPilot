@@ -215,3 +215,24 @@ and why.
   100 ms budget, and 10% is a defensible margin. The change does not rescue the
   earlier runs: their lag (p99 about 30 ms and above) is still INVALID under the
   new bound.
+
+## 18. Re-running as adjacent pairs with confidence intervals
+- **Agent suggested:** After the first official session, the agent found that the
+  VM slowed down about 14 minutes in and was suspended for about 8 minutes during
+  the constant-rate run, undetected because the VM's monotonic clock stopped. It
+  suggested detecting suspensions by comparing wall-clock and monotonic time.
+- **I decided:** Add suspension detection; re-run as three adjacent pairs (Poisson
+  then constant, same seed, seeds 1-3) with Windows sleep and screen-off
+  disabled; and report a 95% bootstrap confidence interval for each p95. The
+  official NFR-1.1 number comes from the three Poisson runs. The verdict still
+  uses the point p95; the interval is informational.
+- **Why:** NFR-1.1 was already met (worst p95 47.5 ms), so the re-run is not about
+  passing. It gives clean numbers, and it answers the question the first session
+  could not: the Poisson vs constant comparison was confounded, because the
+  constant run came last and straddled two machine states. Adjacent pairs with
+  the same seed send the same requests in the same machine state, so timing is
+  the only difference; three pairs show whether a difference is consistent. The
+  interval shows whether about 270 samples per endpoint per run are enough; it
+  covers sampling noise only, not machine drift, which is why runs are repeated.
+  The first session also showed that the laptop's power state changed latency
+  more than anything in the code, most likely Windows power saving and sleep.

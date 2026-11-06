@@ -36,13 +36,22 @@ measurement, so it takes about 5½ minutes. `perf/results/` is in `.gitignore`.
 | `--out` | none | Writes the JSON summary to this file, and the per-request timeline next to it (same name, `.csv`). |
 
 Exit codes: `0` pass, `1` NFR failed (p95 over the limit, or any error), `2`
-INVALID run, `3` setup error (service down, or a list is empty).
+INVALID run (generator lag over the bound, or a VM suspension during the run), `3`
+setup error (service down, or a list is empty).
 
 ## Official measurement: `run_official.sh`
 
-**Purpose.** It runs the four official NFR-1.1 runs in one go, against a freshly
-seeded service, and records what the machine was doing at the same time, so a
-bad run can be explained instead of guessed at.
+**Purpose.** It runs the official NFR-1.1 session in one go, against a freshly
+seeded service: three adjacent pairs of runs, Poisson then constant, with seeds 1,
+2 and 3. It records what the machine was doing at the same time, so a bad run can
+be explained instead of guessed at, and it ends with the session comparison.
+
+**Paired design.** In each pair, the two runs use the same seed, so they send
+exactly the same requests (same endpoints, same ids, same order). They also run
+back to back, so the machine is in as similar a state as possible. That leaves
+timing (Poisson or evenly spaced) as the only difference between them. Three pairs
+show whether a difference is consistent or just noise. The official NFR-1.1 number
+comes from the three Poisson runs.
 
 **Run it** from a plain WSL terminal (not from VS Code):
 
@@ -51,21 +60,29 @@ cd services/registry-service
 bash perf/run_official.sh
 ```
 
-It takes about 22 minutes. The script:
+It takes about 35 minutes. The script:
 
-1. **Pre-flight.** Warns if VS Code server processes are running and prints the
-   top 5 CPU consumers. Fails if port 8000 is already in use.
+1. **Pre-flight.**
+   - Fails if `perf/results/<prefix>-*` already exists, so an earlier session
+     (such as `official-*`) is never overwritten.
+   - Warns if VS Code server processes are running and prints the top 5 CPU
+     consumers.
+   - Fails if port 8000 is already in use.
+   - Prints the Windows preparation reminder and waits for Enter.
+     `ASSUME_YES=1` skips the prompt, for dry runs.
 2. **Server.** Runs `bash seed_registry.sh`, then starts
    `uv run uvicorn main:app --host 127.0.0.1 --port 8000 --log-level warning` in
    the background and waits up to 30 s for `/health`.
 3. **Monitors.** Starts `vmstat -t -w 1` (CPU, run queue, swap, steal, every
    second) and `top -b -d 5 -o %CPU` (all processes by CPU, every 5 s), and saves
    `free -m` before and after.
-4. **Runs.** Poisson with seeds 1, 2 and 3, then constant with seed 1. A failed or
-   INVALID run is recorded and the script carries on, so one bad run does not lose
-   the rest.
-5. **Summary.** One line per run (name, exit code, overall p95, lag p99, verdict),
-   plus the total time.
+4. **Runs,** in this order: Poisson seed 1, constant seed 1, Poisson seed 2,
+   constant seed 2, Poisson seed 3, constant seed 3. A failed or INVALID run is
+   recorded and the script carries on, so one bad run does not lose the rest.
+5. **Summary.** One line per run (name, exit code, overall p95, lag p99,
+   suspensions, verdict).
+6. **Session comparison.** Runs `compare_runs.py` (see below) and saves its output,
+   then prints the total time.
 
 The server and the monitors are stopped on exit, including on failure or
 Ctrl+C.
@@ -76,28 +93,51 @@ Ctrl+C.
 | File | Content |
 | --- | --- |
 | `<prefix>-<arrival>-seed<n>.json` / `.csv` / `.txt` | Each run's summary, per-request timeline and printed report. |
+| `<prefix>-comparison.txt` | The session comparison. |
 | `<prefix>-vmstat.txt`, `<prefix>-top.txt` | System monitors for the whole session. |
 | `<prefix>-free-before.txt`, `<prefix>-free-after.txt` | Memory before and after. |
 | `<prefix>-server.log` | Server output (warnings and errors only). |
 
 **Dry run.** Environment overrides shorten it: `WARMUP` (default 20),
-`DURATION` (default 300) and `RESULTS_PREFIX` (default `official`).
+`DURATION` (default 300), `RESULTS_PREFIX` (default `paired`) and `ASSUME_YES`.
 
 ```bash
-WARMUP=2 DURATION=10 RESULTS_PREFIX=dry bash perf/run_official.sh
+WARMUP=2 DURATION=10 ASSUME_YES=1 RESULTS_PREFIX=dry2 bash perf/run_official.sh
 ```
 
 **Prepare the machine first.** The service, the load generator and the monitors
-share one laptop, so anything else running there ends up in the numbers.
+share one laptop, so anything else running there ends up in the numbers. In the
+first official session, Windows power saving slowed the VM down and then suspended
+it for about 8 minutes.
 
 - Close VS Code. The coding agent runs inside VS Code, so the official run is
   started by a person from a plain terminal.
+- Windows Settings > System > Power & battery > Screen and sleep: set all four
+  options (screen and sleep, on battery and plugged in) to **Never**.
+- Keep the laptop lid open.
 - Plug the laptop into power and set the Windows power mode to best performance.
 - Close games and other heavy Windows apps, including their launchers and
   background services. The WSL monitors cannot see Windows processes.
 - Check Windows Task Manager before starting: idle CPU under 10% and a few GB of
   free memory.
-- Do not use the computer during the ~22 minutes.
+- Do not use the computer until the summary prints (about 35 minutes).
+
+## Comparing a session: `compare_runs.py`
+
+```bash
+uv run python perf/compare_runs.py --prefix paired
+```
+
+It reads `perf/results/<prefix>-*.json` and prints two sections:
+
+- **Official NFR-1.1 result.** The three Poisson runs: p95 [95% CI] per endpoint
+  per run, the worst p95 across endpoints and runs, and an overall PASS only if
+  every Poisson run passed. Exit code `0` for PASS, `1` otherwise.
+- **Paired comparison.** One row per seed: Poisson overall p95 [CI], constant
+  overall p95 [CI], and the difference (Poisson minus constant) in ms. A pair is
+  marked *not comparable* if either run is INVALID or had a suspension. A summary
+  line says whether the difference has the same sign in all comparable pairs,
+  and in how many pairs the two intervals overlap.
 
 ## How it works
 
@@ -129,8 +169,11 @@ share one laptop, so anything else running there ends up in the numbers.
 
 1. **Metadata.** Start time, commit (with `+dirty` if the tree had uncommitted
    changes), Python version, OS/kernel, CPU, and every run parameter.
-2. **Latency table.** Per endpoint and `OVERALL`: requests, errors, p50, p95, p99,
-   max and mean, in ms. The verdict is based on this table.
+2. **Latency table.** Per endpoint and `OVERALL`: requests, errors, p50, p95 with
+   its 95% confidence interval as `p95 [low, high]`, p99, max and mean, in ms. The
+   verdict is based on this table and uses the point p95, as the spec says. One
+   informational line follows: whether the upper bound of every endpoint's
+   interval is also within the limit.
 3. **Service-time table.** The same columns, measured from the actual send. When
    it is close to the latency table, the requests left on time.
 4. **Errors by type.** Errors in the measurement window, by type: `timeout`,
@@ -144,7 +187,10 @@ share one laptop, so anything else running there ends up in the numbers.
    maximum service time of requests sent during that period. When the service
    time spikes in the same period as the lag, the server and the generator were
    held up together, which points to the machine rather than to either one.
-6. **Queueing checks.** These validate the measurement itself. Each one prints a
+6. **Suspensions.** Every period where the whole VM was paused (see below), with
+   its start (seconds into the run, and wall-clock time), its duration and its
+   kind. A suspension during warm-up or measurement makes the run **INVALID**.
+7. **Queueing checks.** These validate the measurement itself. Each one prints a
    one-line interpretation:
    - **Arrivals.** The achieved rate, and the mean and coefficient of variation
      (CV = stdev / mean) of the actual gaps between sends. Poisson arrivals give
@@ -173,8 +219,55 @@ share one laptop, so anything else running there ends up in the numbers.
      synchronous endpoints in a thread pool, so it is not a single server in the
      M/M/1 sense. ρ is a rough estimate. Well below 0.5, queueing adds little
      latency; as ρ approaches 1, latency rises sharply.
-7. **VERDICT.** PASS only if every endpoint has p95 ≤ the limit, there are zero
+8. **VERDICT.** PASS only if every endpoint has p95 ≤ the limit, there are zero
    errors, and the run is valid. Otherwise the report prints each reason.
+
+## Confidence interval for p95
+
+A single run measures about 270 requests per endpoint. Another run of the same
+length would draw a slightly different set of requests and give a slightly
+different p95. The 95% interval shows how much the p95 could move from that
+sampling alone. A narrow interval means the sample is large enough. A wide one
+means the p95 rests on only a few slow requests.
+
+The tool uses the **percentile bootstrap**:
+
+1. Draw a resample of the same size from the measured latencies, with
+   replacement.
+2. Take the nearest-rank p95 of that resample.
+3. Repeat 2000 times. The interval runs from the 2.5th to the 97.5th percentile
+   of those 2000 values.
+
+It uses only the standard library. The resampling has its own random stream
+derived from the run seed, so the same run data and seed always give the same
+interval.
+
+**Limitation.** The interval covers sampling noise only. The bootstrap treats
+requests as independent draws from one unchanging distribution. It does not
+capture changes in the machine's state over time, such as the slowdown of about 3×
+seen in the first official session. That is why runs are repeated, and why the
+pairs run back to back. Because a nearest-rank percentile is always a measured
+value, the bounds are measured latencies too, and small samples give intervals
+that move in steps.
+
+## VM suspension detection
+
+When Windows sleeps or pauses the WSL VM, everything inside the VM stops, and so
+does its monotonic clock. Requests in flight look normal, and generator lag stays
+at zero, so the lag check cannot see it. In the first official session, an
+8-minute suspension in the middle of a run went unnoticed this way.
+
+During each run, a heartbeat task records the monotonic clock and the wall clock
+about once per second. Between two heartbeats, the run counts as suspended if:
+
+- the wall clock advanced more than the monotonic clock by over 1 s (kind
+  `clock_gap`), or
+- no heartbeat came for over 2 s of wall time (kind `no_heartbeat`: the event loop
+  did not run at all).
+
+Smaller differences, such as normal clock adjustments and scheduling jitter, are
+ignored. A suspension during warm-up or measurement makes the run INVALID. One
+outside the run is reported but does not.
 
 ## Timeline (CSV)
 
@@ -198,3 +291,6 @@ the run.
   latency, and a larger database makes the list endpoints slower.
 - The machine running the measurement also runs the generator. Background load
   on the machine shows up as generator lag; the lag check catches this.
+- A change in the machine's speed that affects the server and the generator
+  equally, such as a CPU power state, does not show up as lag. It shows up only as
+  a change in service time across the timeline, and by comparing repeated runs.

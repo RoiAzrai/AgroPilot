@@ -1,5 +1,6 @@
 import asyncio
 import json
+import random
 import socket
 import statistics
 import threading
@@ -12,9 +13,14 @@ import uvicorn
 
 from perf.load_test import (
     ENDPOINTS,
+    EXIT_INVALID,
+    EXIT_PASS,
+    Heartbeat,
     Result,
+    bootstrap_ci,
     build_schedule,
     classify_error,
+    detect_suspensions,
     errors_by_type,
     find_stalls,
     lag_stats,
@@ -23,6 +29,7 @@ from perf.load_test import (
     percentile,
     run,
     time_average_in_flight,
+    verdict,
 )
 
 IDS = {
@@ -203,6 +210,102 @@ def test_lag_stats_reports_p50_p99_max_and_validity():
     assert lag_stats(measured, 9.9)["valid"] is False
 
 
+# --- Suspension detection -------------------------------------------------------
+
+WALL0 = 1_800_000_000.0  # any fixed Unix time
+
+
+def beats_every_second(n: int, start_mono: float = 0.0, start_wall: float = WALL0) -> list[Heartbeat]:
+    return [Heartbeat(start_mono + i, start_wall + i) for i in range(n)]
+
+
+def test_no_suspension():
+    assert detect_suspensions(beats_every_second(330), run_end_s=320) == []
+
+
+def test_one_suspension_inside_the_run():
+    # 8 minutes pass on the wall clock between the beats at 170 s and 171 s.
+    beats = beats_every_second(171) + [
+        Heartbeat(170 + 1 + i, WALL0 + 170 + 1 + 480 + i) for i in range(150)
+    ]
+    found = detect_suspensions(beats, run_end_s=320)
+    assert len(found) == 1
+    assert found[0]["start_s"] == pytest.approx(170)
+    assert found[0]["duration_s"] == pytest.approx(480)
+    assert found[0]["kind"] == "clock_gap"
+    assert found[0]["in_run"] is True
+
+
+def test_suspension_after_the_run_is_reported_but_not_in_run():
+    beats = beats_every_second(325) + [Heartbeat(325, WALL0 + 324 + 60)]
+    found = detect_suspensions(beats, run_end_s=320)
+    assert len(found) == 1
+    assert found[0]["in_run"] is False
+
+
+def test_small_clock_jitter_does_not_trigger():
+    rng = random.Random(3)
+    beats, wall = [], WALL0
+    for i in range(320):
+        beats.append(Heartbeat(float(i), wall))
+        wall += 1.0 + rng.uniform(-0.3, 0.3)  # NTP slews and scheduling jitter
+    beats.append(Heartbeat(320.0, wall + 0.9))  # wall clock 0.9 s ahead: under the 1 s bound
+    assert detect_suspensions(beats, run_end_s=320) == []
+
+
+def test_missing_heartbeats_count_as_a_suspension():
+    # Both clocks moved 3 s, but no heartbeat came: the event loop was not running.
+    beats = beats_every_second(10) + [Heartbeat(12.0, WALL0 + 12.0)]
+    found = detect_suspensions(beats, run_end_s=320)
+    assert [(s["kind"], s["duration_s"]) for s in found] == [("no_heartbeat", pytest.approx(3.0))]
+
+
+def test_suspension_inside_the_run_makes_it_invalid():
+    rows = {"OVERALL": {"errors": 0, "latency_ms": {"p95": 20.0}}}
+    lag = {"valid": True, "p99_ms": 2.0, "bound_ms": 10.0}
+    inside = {"start_s": 170.0, "duration_s": 480.0, "wall_start": "x", "kind": "clock_gap", "in_run": True}
+    code, reasons = verdict(rows, lag, 100, [inside])
+    assert code == EXIT_INVALID
+    assert "VM suspended for 480.0 s" in reasons[0]
+    assert verdict(rows, lag, 100, [{**inside, "in_run": False}]) == (EXIT_PASS, [])
+
+
+# --- Bootstrap confidence interval -------------------------------------------------
+
+
+def latencies(n: int, seed: int = 11) -> list[float]:
+    rng = random.Random(seed)
+    return [rng.lognormvariate(2.5, 0.4) for _ in range(n)]
+
+
+def test_bootstrap_same_seed_same_interval():
+    values = latencies(300)
+    assert bootstrap_ci(values, random.Random("1:bootstrap")) == bootstrap_ci(
+        values, random.Random("1:bootstrap")
+    )
+
+
+def test_bootstrap_interval_contains_the_point_estimate():
+    values = latencies(300)
+    low, high = bootstrap_ci(values, random.Random("1:bootstrap"))
+    assert low <= percentile(values, 95) <= high
+    assert low < high
+
+
+def test_bootstrap_constant_data_has_zero_width():
+    assert bootstrap_ci([12.5] * 200, random.Random("1:bootstrap")) == [12.5, 12.5]
+
+
+def test_bootstrap_fewer_samples_give_a_wider_interval():
+    many = bootstrap_ci(latencies(3000), random.Random("1:bootstrap"))
+    few = bootstrap_ci(latencies(100), random.Random("1:bootstrap"))
+    assert few[1] - few[0] > many[1] - many[0]
+
+
+def test_bootstrap_without_values_returns_none():
+    assert bootstrap_ci([], random.Random("1:bootstrap")) is None
+
+
 def test_find_stalls_ignores_lag_at_or_below_the_threshold():
     results = [record(0, 0.1, 0.2), record(1, 1.05, 1.1), record(2, 2.0, 2.1)]
     assert find_stalls(results) == []
@@ -256,4 +359,8 @@ def test_measures_a_known_latency(stub_url):
     assert overall["errors"] == 0
     assert 45 <= overall["latency_ms"]["p50"] <= 90
     assert report["errors_by_type"] == {}
+    assert report["suspensions"] == []
+    assert report["heartbeats"] >= 3
+    low, high = overall["latency_ms"]["p95_ci"]
+    assert low <= overall["latency_ms"]["p95"] <= high
     assert report["metadata"]["seed"] == 7
