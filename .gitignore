@@ -28,3 +28,6 @@ htmlcov/
 
 # Local databases
 registry.db
+
+# Load-test output
+services/registry-service/perf/results/

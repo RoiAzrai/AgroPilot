@@ -129,6 +129,16 @@ and why.
   The current date comes from one injectable function, so the tests are
   deterministic and do not depend on when they run.
 
+## 13. Catalogue ids are matched exactly
+- **Agent suggested:** Nothing different; the question was whether `Tomato` should
+  find `tomato`.
+- **I decided:** Catalogue ids are matched exactly and case-sensitively, so
+  `GET /v1/crops/Tomato` returns 404.
+- **Why:** Catalogue ids are identifiers (slugs), not display names. Accepting
+  several spellings would mean the same crop has more than one id, and plots
+  could store inconsistent references. SQLite's default `BINARY` comparison
+  already enforces this, with no extra code.
+
 ## 14. Which database errors return 503
 - **Agent suggested:** Map every `sqlite3.OperationalError` to `503`, since a
   missing file and a lock both raise it.
@@ -160,3 +170,48 @@ and why.
   the client "the service could not serve you, and it is not your fault".
   Retry-After is omitted because a retry is not expected to help. The detail is
   generic so internal details (SQL, table names, paths) never leak.
+
+## 16. How NFR-1.1 is measured
+- **Agent suggested:** A simple loop that sends requests at roughly 10 per second,
+  awaits each response and times it with a monotonic clock, then reports
+  percentiles.
+- **I decided:** An open-model load test with Poisson arrivals at 10 requests per
+  second on average, over all 11 GET endpoints with equal weight, 20 s warm-up and
+  300 s measurement, run 3 times. Latency is measured from the scheduled send
+  time. The run reports queueing-theory checks (arrival CV, generator lag,
+  Little's Law, utilization). k6 is used later as an independent cross-check.
+- **Why:** A closed loop that waits for each response stops sending exactly when
+  the server is slow, so slow periods disappear from the results (coordinated
+  omission). Poisson arrivals model many independent clients and produce natural
+  small bursts, so the p95 is not flattered by perfectly spaced requests. At
+  10 requests per second the difference from a constant rate is expected to be
+  small; the constant-rate comparison run checks this. The checks validate the
+  measurement itself, not only the service. Measured on localhost with the seed
+  database, so the numbers are a lower bound: a real network adds latency.
+  Timing and endpoint selection use separate random streams from the same seed
+  (common random numbers), so the Poisson and constant runs send the same
+  requests and differ only in timing. The Little's Law line is a bookkeeping
+  consistency check, not an independent validation of the measurement.
+
+## 17. First measurement runs were invalid; diagnosing before re-running
+- **Agent suggested:** Re-run the same measurement when the machine is quiet, or
+  first add a per-request timeline to find the cause. Later it pointed out that a
+  5 ms lag bound would likely fail on a WSL2 laptop even when quiet.
+- **I decided:** Diagnose first. A timeline and vmstat showed every stall
+  coincided with high CPU load on the machine (run queue up to 13 on 8 CPUs) while
+  the service used about 1-2% CPU, with 0 errors and p50 about 12 ms. The official
+  runs are executed by me from a plain terminal with VS Code closed, via a script
+  that also records the top CPU consumers. I raised the generator-lag validity
+  bound from 5 ms to 10 ms, after seeing the diagnostic data.
+- **Why:** Re-running without understanding the cause would just be hoping for
+  luck. The coding agent runs inside VS Code, so it cannot measure with VS Code
+  closed. The WSL monitors (vmstat, top) cannot see Windows processes. A game
+  running on Windows was competing for CPU and memory; Windows memory pressure can
+  pause the whole WSL VM, which matches the multi-second stalls where server and
+  client froze together. It was closed before the official runs. On the bound:
+  latency is measured from the scheduled send time, so client lag is always
+  included in the result and can only make it worse; it can never produce a false
+  pass. The bound only needs to keep the client's share small relative to the
+  100 ms budget, and 10% is a defensible margin. The change does not rescue the
+  earlier runs: their lag (p99 about 30 ms and above) is still INVALID under the
+  new bound.
