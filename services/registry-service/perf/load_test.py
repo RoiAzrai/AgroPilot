@@ -86,6 +86,7 @@ class Result:
     ok: bool
     status: int | None
     error: str | None
+    error_detail: str | None = None
 
 
 @dataclass(frozen=True)
@@ -154,6 +155,37 @@ def classify_error(exc: BaseException | None, status: int | None) -> str | None:
     return None if status == 200 else f"http_{status}"
 
 
+def describe_error(exc: BaseException | None, status: int | None) -> str | None:
+    """Class and message of a failure, plus its cause, so an error explains itself.
+
+    httpx often wraps a lower-level error with an empty message (for example a
+    ReadError around ConnectionResetError), so the cause is kept too.
+    """
+    if exc is None:
+        return None if status == 200 else f"HTTP {status}"
+    detail = f"{type(exc).__name__}: {str(exc) or '(no message)'}"
+    if exc.__cause__ is not None:
+        cause = exc.__cause__
+        detail += f" (caused by {type(cause).__name__}: {str(cause) or '(no message)'})"
+    return detail
+
+
+def build_client(args: argparse.Namespace) -> httpx.AsyncClient:
+    """One keep-alive client whose limits never make it queue requests itself.
+
+    Its idle keep-alive must be shorter than the server's (uvicorn's
+    timeout_keep_alive defaults to 5 s). With equal values a pooled connection can
+    be reused just as the server closes it: in a test, 35 of 480 reuses at the
+    edge failed with 5.0 s and 0 of 480 with 4.0 s.
+    """
+    limits = httpx.Limits(
+        max_connections=1000,
+        max_keepalive_connections=1000,
+        keepalive_expiry=args.keepalive_expiry,
+    )
+    return httpx.AsyncClient(base_url=args.base_url, timeout=args.timeout, limits=limits)
+
+
 async def send(client: httpx.AsyncClient, arrival: Arrival, t0: float) -> Result:
     """Send one request. Timeout, connection error or non-200 counts as an error."""
     loop = asyncio.get_running_loop()
@@ -165,7 +197,10 @@ async def send(client: httpx.AsyncClient, arrival: Arrival, t0: float) -> Result
         failure = exc
     done = loop.time() - t0
     error = classify_error(failure, status)
-    return Result(arrival.endpoint, arrival.t, sent, done, error is None, status, error)
+    return Result(
+        arrival.endpoint, arrival.t, sent, done, error is None, status, error,
+        describe_error(failure, status),
+    )
 
 
 async def record_heartbeats(t0: float, beats: list[Heartbeat]) -> None:
@@ -346,6 +381,10 @@ def errors_by_type(results: list[Result]) -> dict[str, int]:
     return dict(Counter(r.error for r in results if r.error).most_common())
 
 
+def errors_by_detail(results: list[Result]) -> dict[str, int]:
+    return dict(Counter(r.error_detail for r in results if r.error).most_common())
+
+
 def find_stalls(results: list[Result], threshold_ms: float = STALL_LAG_MS) -> list[dict]:
     """Periods where the generator ran late: consecutive requests (in schedule order)
     whose lag exceeded the threshold. A stall starts at the first late request's
@@ -407,12 +446,14 @@ def write_timeline(path: Path, results: list[Result], start: float, end: float) 
     """One raw row per request, times in seconds from the start of the run."""
     with path.open("w", newline="") as file:
         writer = csv.writer(file)
-        writer.writerow(["scheduled", "sent", "done", "endpoint", "status", "error", "in_window"])
+        writer.writerow([
+            "scheduled", "sent", "done", "endpoint", "status", "error", "in_window", "error_detail",
+        ])
         for r in sorted(results, key=lambda r: r.scheduled):
             writer.writerow([
                 f"{r.scheduled:.6f}", f"{r.sent:.6f}", f"{r.done:.6f}", r.endpoint,
                 r.status if r.status is not None else "", r.error or "",
-                int(start <= r.scheduled < end),
+                int(start <= r.scheduled < end), r.error_detail or "",
             ])
 
 
@@ -496,6 +537,7 @@ def run_metadata(args: argparse.Namespace, started_at: datetime) -> dict:
         "timeout_s": args.timeout,
         "threshold_ms": args.threshold_ms,
         "max_lag_ms": args.max_lag_ms,
+        "keepalive_expiry_s": args.keepalive_expiry,
         "base_url": args.base_url,
     }
 
@@ -503,10 +545,7 @@ def run_metadata(args: argparse.Namespace, started_at: datetime) -> dict:
 async def measure(args: argparse.Namespace) -> tuple[dict, list[Result]]:
     """Discover ids, run warm-up plus measurement, and build the report."""
     started_at = datetime.now(timezone.utc)
-    limits = httpx.Limits(max_connections=1000, max_keepalive_connections=1000)
-    async with httpx.AsyncClient(
-        base_url=args.base_url, timeout=args.timeout, limits=limits
-    ) as client:
+    async with build_client(args) as client:
         ids = await discover_ids(client)
         schedule = build_schedule(
             args.rate, args.warmup + args.duration, args.arrival, args.seed, ids
@@ -528,6 +567,7 @@ async def measure(args: argparse.Namespace) -> tuple[dict, list[Result]]:
         "endpoints": rows,
         "ci_upper_above_threshold": ci_upper_above(rows, args.threshold_ms),
         "errors_by_type": errors_by_type(measured),
+        "errors_by_detail": errors_by_detail(measured),
         # Over the whole run, warm-up included: a stall there still says something about the machine.
         "stalls": find_stalls(results),
         "suspensions": suspensions,
@@ -621,7 +661,8 @@ def interpret(report: dict) -> list[str]:
 def format_report(report: dict) -> str:
     meta = report["metadata"]
     lines = ["NFR-1.1 load test", ""]
-    lines += [f"  {key:<13}{value}" for key, value in meta.items()]
+    width = max(len(key) for key in meta) + 2
+    lines += [f"  {key:<{width}}{value}" for key, value in meta.items()]
     lines += ["", "Latency from scheduled send time (ms) - used for the verdict"]
     lines += format_table(report["endpoints"], "latency_ms")
     above = report["ci_upper_above_threshold"]
@@ -635,6 +676,10 @@ def format_report(report: dict) -> str:
     errors = report["errors_by_type"]
     lines += ["", "Errors by type (measurement window)"]
     lines += [f"  {kind:<16}{count}" for kind, count in errors.items()] or ["  none"]
+    lines += ["", "Errors by detail (measurement window)"]
+    lines += [
+        f"  {count:>5} x {detail}" for detail, count in report["errors_by_detail"].items()
+    ] or ["  none"]
     lines += ["", f"Stalls: generator lag > {STALL_LAG_MS} ms (whole run, seconds from start)"]
     lines += [
         f"  at {s['start_s']:8.2f} s  lasted {s['duration_s'] * 1000:8.1f} ms  "
@@ -672,6 +717,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--max-lag-ms", type=float, default=10.0,
         help="generator lag p99 limit (10 ms = 10%% of the 100 ms budget)",
+    )
+    parser.add_argument(
+        "--keepalive-expiry", type=float, default=4.0,
+        help="client idle keep-alive, seconds; must be shorter than the server's (uvicorn: 5 s)",
     )
     parser.add_argument(
         "--out", type=Path,

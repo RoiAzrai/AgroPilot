@@ -236,3 +236,23 @@ and why.
   covers sampling noise only, not machine drift, which is why runs are repeated.
   The first session also showed that the laptop's power state changed latency
   more than anything in the code, most likely Windows power saving and sleep.
+
+## 19. A single transport error traced to a keep-alive race
+- **Agent suggested:** Investigate before re-running. It found that httpx and
+  uvicorn both default to a 5 s keep-alive, with the server's timer starting
+  slightly earlier, so a pooled connection can be reused just as the server closes
+  it. It reproduced the race (35 of 480 reuses near the edge failed at 5.0 s,
+  0 at 4.0 s) and recommended a shorter client keep-alive plus recording error
+  details.
+- **I decided:** Keep the FAIL of Poisson seed 2 on record as it is. Set the
+  client's keepalive_expiry to 4 s, record exception details, and run a new paired
+  session (paired2). Report the finding for real clients of the service.
+- **Why:** The zero-error rule was set before the run, so it is not reinterpreted
+  afterwards. The mechanism is proven from source and by experiment; that this
+  specific request failed for this reason is strongly supported but not proven,
+  because only "transport_error" was recorded - hence the error details. The
+  error appeared only in a Poisson run: bursts occasionally need a second pooled
+  connection, which then sits idle close to the 5 s limit, while a constant rate
+  almost never opens one. A constant-rate test alone would have hidden this bug.
+  It is a client configuration issue, not an application bug, but any real client
+  using httpx defaults would hit it, so it belongs in the PR.

@@ -33,6 +33,7 @@ measurement, so it takes about 5½ minutes. `perf/results/` is in `.gitignore`.
 | `--timeout` | `5` | Per-request timeout, in seconds. |
 | `--threshold-ms` | `100` | p95 limit for every endpoint. |
 | `--max-lag-ms` | `10` | Generator lag p99 limit (10% of the 100 ms budget). Above it, the run is INVALID. |
+| `--keepalive-expiry` | `4` | Client idle keep-alive, in seconds. Must be shorter than the server's (uvicorn: 5 s); see [Keep-alive race](#keep-alive-race). |
 | `--out` | none | Writes the JSON summary to this file, and the per-request timeline next to it (same name, `.csv`). |
 
 Exit codes: `0` pass, `1` NFR failed (p95 over the limit, or any error), `2`
@@ -53,11 +54,13 @@ timing (Poisson or evenly spaced) as the only difference between them. Three pai
 show whether a difference is consistent or just noise. The official NFR-1.1 number
 comes from the three Poisson runs.
 
-**Run it** from a plain WSL terminal (not from VS Code):
+**Run it** from a plain WSL terminal (not from VS Code). The next session uses the
+prefix `paired2`. The earlier `official-*` and `paired-*` results stay as they are,
+and the script refuses to overwrite an existing prefix:
 
 ```bash
 cd services/registry-service
-bash perf/run_official.sh
+RESULTS_PREFIX=paired2 bash perf/run_official.sh
 ```
 
 It takes about 35 minutes. The script:
@@ -176,9 +179,14 @@ It reads `perf/results/<prefix>-*.json` and prints two sections:
    interval is also within the limit.
 3. **Service-time table.** The same columns, measured from the actual send. When
    it is close to the latency table, the requests left on time.
-4. **Errors by type.** Errors in the measurement window, by type: `timeout`,
-   `connect_error`, `transport_error` (any other network failure), or
-   `http_<status>` for a response other than 200.
+4. **Errors by type and by detail.** Errors in the measurement window, by type:
+   `timeout`, `connect_error`, `transport_error` (any other network failure), or
+   `http_<status>` for a response other than 200. Then the same errors by detail:
+   the exception class and message, plus the class and message of its cause,
+   for example `ReadError: (no message) (caused by ConnectionResetError: [Errno 104]
+   Connection reset by peer)`. httpx often wraps a lower-level error with an empty
+   message, so the cause is what explains it. The detail is for diagnosis only;
+   errors are counted and judged by type, as before.
 5. **Stalls.** Every period in the whole run, warm-up included, where generator lag
    exceeded 100 ms. A stall is a run of consecutive late requests in schedule
    order. It starts at the first one's scheduled time and ends when the last one
@@ -281,6 +289,7 @@ one raw row per request, warm-up included, in schedule order.
 | `status` | HTTP status, empty when no response arrived. |
 | `error` | Empty on success, otherwise the error type (see above). |
 | `in_window` | `1` if the request counts toward the results, `0` for warm-up. |
+| `error_detail` | Empty on success, otherwise the exception class and message with its cause, or `HTTP <status>`. |
 
 Use it to line stalls up against system data, such as `vmstat 1` recorded during
 the run.
@@ -294,3 +303,51 @@ the run.
 - A change in the machine's speed that affects the server and the generator
   equally, such as a CPU power state, does not show up as lag. It shows up only as
   a change in service time across the timeline, and by comparing repeated runs.
+
+## Keep-alive race
+
+**Finding.** In the first paired session, Poisson seed 2 had one `transport_error`
+(`GET /v1/farms/{id}`). It failed 7 ms after being sent, on a quiet machine, with
+no lag and no suspension. The cause was traced to the keep-alive settings of the
+client and the server:
+
+- httpx keeps an idle pooled connection for 5 s by default
+  (`Limits(keepalive_expiry=5.0)`), and uvicorn closes an idle connection after
+  5 s by default (`timeout_keep_alive=5`).
+- The server's timer starts when it finishes sending a response. The client's
+  timer starts a little later, when it finishes reading it. So the server always
+  closes first, and for a short moment the client still treats the connection as
+  usable. A request sent in that moment fails with
+  `RemoteProtocolError: Server disconnected without sending a response.` or a
+  `ReadError`.
+- Under Poisson arrivals, a short burst occasionally needs a second pooled
+  connection. That connection then sits idle until the next burst, sometimes
+  close to the 5 s limit. A reconstruction of the pool from the timeline showed
+  that the failed request reused such a connection after 4996.7 ms idle. It was
+  the only reuse within 5 ms of the limit in the whole session. A constant rate
+  almost never opens a second connection, which is why the error appeared only in
+  a Poisson run.
+
+**Evidence.**
+- *Proven from source and by experiment:* the defaults above, and the
+  mechanism. A scratch test reused pooled connections idle 4.990–5.002 s, with
+  the server under load. Result: **35 of 480** reuses failed with
+  `keepalive_expiry=5.0`, and **0 of 480** with `keepalive_expiry=4.0`.
+- *Strongly supported, not proven:* that the session's single error had this
+  cause. The tool recorded only `transport_error` at the time, which is why it now
+  records error details.
+
+**In the tool.** The client's keep-alive is now 4 s (`--keepalive-expiry`), shorter
+than the server's 5 s, and every error records its exception class, message and
+cause. The FAIL of `paired-poisson-seed2` stays on record.
+
+**For real clients of the service.** It is not a bug in the application code,
+but any client that keeps idle connections for 5 s or more against this server
+will hit it now and then. That includes httpx with its defaults. Recommended:
+
+- Set the client's idle keep-alive below the server's, for example
+  `httpx.Limits(keepalive_expiry=4)`.
+- Retry a `GET` once on `RemoteProtocolError` or `ReadError`. These requests are
+  idempotent, so a single retry is safe.
+- Alternatively, raise the server's keep-alive above its clients' idle time with
+  uvicorn `--timeout-keep-alive`. That is a deployment setting, not a code change.

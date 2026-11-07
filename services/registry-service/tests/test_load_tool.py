@@ -1,4 +1,5 @@
 import asyncio
+import csv
 import json
 import random
 import socket
@@ -18,9 +19,12 @@ from perf.load_test import (
     Heartbeat,
     Result,
     bootstrap_ci,
+    build_client,
     build_schedule,
     classify_error,
+    describe_error,
     detect_suspensions,
+    errors_by_detail,
     errors_by_type,
     find_stalls,
     lag_stats,
@@ -30,6 +34,7 @@ from perf.load_test import (
     run,
     time_average_in_flight,
     verdict,
+    write_timeline,
 )
 
 IDS = {
@@ -191,6 +196,88 @@ def test_find_stalls_groups_consecutive_late_requests():
     assert second["requests"] == 1
     assert second["max_lag_ms"] == pytest.approx(500)
     assert second["max_service_ms"] == pytest.approx(20)
+
+
+def pool_keepalive_expiry(client: httpx.AsyncClient) -> float:
+    # httpx passes Limits.keepalive_expiry to the httpcore pool it creates.
+    return client._transport._pool._keepalive_expiry
+
+
+@pytest.mark.parametrize(("argv", "expected"), [([], 4.0), (["--keepalive-expiry", "2.5"], 2.5)])
+def test_client_keepalive_comes_from_the_option(argv, expected):
+    args = parse_args(argv)
+    assert args.keepalive_expiry == expected
+    client = build_client(args)
+    try:
+        assert pool_keepalive_expiry(client) == expected
+    finally:
+        asyncio.run(client.aclose())
+
+
+def test_default_client_keepalive_is_shorter_than_uvicorns():
+    assert parse_args([]).keepalive_expiry < uvicorn.Config(app=None).timeout_keep_alive
+
+
+def raised_from(exc: BaseException, cause: BaseException) -> BaseException:
+    """Return exc as it looks after `raise exc from cause`."""
+    try:
+        raise exc from cause
+    except BaseException as caught:
+        return caught
+
+
+@pytest.mark.parametrize(
+    ("exc", "status", "expected"),
+    [
+        (None, 200, None),
+        (None, 503, "HTTP 503"),
+        (
+            httpx.RemoteProtocolError("Server disconnected without sending a response."),
+            None,
+            "RemoteProtocolError: Server disconnected without sending a response.",
+        ),
+        (
+            raised_from(httpx.ReadError(""), ConnectionResetError(104, "Connection reset by peer")),
+            None,
+            "ReadError: (no message) (caused by ConnectionResetError: "
+            "[Errno 104] Connection reset by peer)",
+        ),
+        (
+            raised_from(httpx.ConnectError("All connection attempts failed"), OSError("refused")),
+            None,
+            "ConnectError: All connection attempts failed (caused by OSError: refused)",
+        ),
+    ],
+    ids=["ok", "http-status", "no-cause", "empty-message-with-cause", "with-cause"],
+)
+def test_describe_error(exc, status, expected):
+    assert describe_error(exc, status) == expected
+
+
+def test_errors_by_detail_counts_failures_only():
+    results = [
+        record(0, 0, 0.1),
+        Result("farm_by_id", 1, 1, 1.007, False, None, "transport_error",
+               "RemoteProtocolError: Server disconnected without sending a response."),
+        Result("farm_by_id", 2, 2, 2.007, False, None, "transport_error",
+               "RemoteProtocolError: Server disconnected without sending a response."),
+        Result("crops_list", 3, 3, 3.01, False, 503, "http_503", "HTTP 503"),
+    ]
+    assert errors_by_detail(results) == {
+        "RemoteProtocolError: Server disconnected without sending a response.": 2,
+        "HTTP 503": 1,
+    }
+    assert errors_by_type(results) == {"transport_error": 2, "http_503": 1}
+
+
+def test_timeline_has_an_error_detail_column(tmp_path):
+    path = tmp_path / "run.csv"
+    write_timeline(path, [
+        record(0, 0, 0.1),
+        Result("farm_by_id", 1, 1, 1.007, False, None, "transport_error", "ReadError: (no message)"),
+    ], 0, 10)
+    rows = list(csv.DictReader(path.open()))
+    assert [row["error_detail"] for row in rows] == ["", "ReadError: (no message)"]
 
 
 def test_default_lag_bound_is_10_ms():
