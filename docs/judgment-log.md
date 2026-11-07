@@ -256,3 +256,24 @@ and why.
   almost never opens one. A constant-rate test alone would have hidden this bug.
   It is a client configuration issue, not an application bug, but any real client
   using httpx defaults would hit it, so it belongs in the PR.
+
+## 20. Cross-checking our load tool with k6
+- **Agent suggested:** Run k6 with the same 11-endpoint mix at the same constant
+  rate, in adjacent pairs with our constant-rate runs, and compare k6's
+  http_req_duration with our service time per endpoint (p50, p95, p99), using
+  k6's own summary export. On top of the prescribed design it chose to count only
+  successful requests in k6's percentiles (status 200, as our tool does), to keep
+  k6's connection-wait and TCP-setup times in the report so the time k6 leaves
+  out is visible, and to log every failed request with its scenario, k6 error
+  code and message.
+- **I decided:** Run k6 v2.3.0 as an independent cross-check in three adjacent
+  pairs with our tool's constant-rate mode, comparing our service time with k6's
+  http_req_duration per endpoint. k6 was installed per-user from the official
+  GitHub release, verified by SHA-256 checksum, without sudo.
+- **Why:** We wrote our own measurement tool, so its accuracy needs independent
+  evidence. k6 is a widely used open-model tool. It only supports a constant
+  arrival rate and measures from the actual send, so the fair comparison is with
+  our constant-rate runs and our service-time column. Adjacent pairs keep both
+  tools in the same machine state. k6 has no seed, so we compare distributions,
+  not identical request sequences. Installing without sudo keeps the agent
+  without administrator rights.

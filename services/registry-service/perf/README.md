@@ -351,3 +351,134 @@ will hit it now and then. That includes httpx with its defaults. Recommended:
   idempotent, so a single retry is safe.
 - Alternatively, raise the server's keep-alive above its clients' idle time with
   uvicorn `--timeout-keep-alive`. That is a deployment setting, not a code change.
+
+## Cross-check with k6
+
+**Why.** `load_test.py` is our own tool, so its numbers need independent evidence.
+k6 is a widely used open-model load tool with its own HTTP client and its own
+timing code. If both tools measure the same latency distribution on the same
+machine, the measurement is not an artefact of our tool. The cross-check is
+about the tool, not the service: it does not change the NFR-1.1 result, which
+still comes from the Poisson runs.
+
+**Version.** k6 v2.3.0, installed per user at `~/.local/bin/k6` from the official
+GitHub release (SHA-256 verified). The script uses this version's APIs:
+`constant-arrival-rate` scenarios, `handleSummary`, `k6/execution`.
+
+**What is compared, and why.**
+
+- **Constant rate only.** k6's open-model executor, `constant-arrival-rate`,
+  starts iterations at evenly spaced times; it has no Poisson mode. So k6 is
+  compared with our `--arrival constant` runs, not with the Poisson runs.
+- **Our service time vs k6's `http_req_duration`.** k6 measures
+  `http_req_duration` (= sending + waiting + receiving) from the moment the
+  request actually goes out. It has no equivalent of our scheduled-time latency.
+  The matching number in our report is the table *Service time from actual send
+  time*, so that is what is compared, per endpoint: p50, p95 and p99.
+- **Remaining definitional differences.**
+  - k6 leaves out `http_req_blocked` (waiting for a free connection, DNS) and
+    `http_req_connecting` (TCP setup). Our service time starts before httpx takes
+    a connection from its pool, so it includes those when they happen, plus a
+    little Python and event-loop overhead. Expect ours to be slightly higher. The
+    k6 report keeps `http_req_blocked` and `http_req_connecting` so the left-out
+    time is visible.
+  - Percentiles: k6 interpolates between values, our tool uses nearest rank.
+    Both use successful requests only (k6: `expected_response:true`, with only
+    status 200 counted as expected, as in our tool).
+  - Same per-request timeout (5 s) and the same 11 endpoints, tag names and
+    equal weights.
+
+**How to run.** Like `run_official.sh`: from a plain terminal, VS Code closed,
+machine prepared as described there. About 35 minutes.
+
+```bash
+cd services/registry-service
+bash perf/run_k6_crosscheck.sh                      # RESULTS_PREFIX defaults to k6cross
+```
+
+Dry run: `WARMUP=2 DURATION=10 ASSUME_YES=1 RESULTS_PREFIX=k6dry bash perf/run_k6_crosscheck.sh`.
+
+The harness has the same pre-flight checks as `run_official.sh` (refuses an
+existing prefix, VS Code warning, top CPU consumers, port 8000 free, Enter
+confirmation), and also fails if `k6` is not in `PATH` and prints its version.
+It seeds the database, starts the server and the `vmstat`/`top`/`free` monitors,
+then runs three adjacent pairs, back to back so both tools see the same machine
+state:
+
+`ours-constant-seed1, k6-run1, ours-constant-seed2, k6-run2, ours-constant-seed3, k6-run3`
+
+A failed run is recorded and the script carries on. It ends with a summary line
+per run and `compare_k6.py`.
+
+**The k6 script, `perf/k6_mix.js`.** In `setup()` it reads the ids once through
+the API's list endpoints (black-box, like our tool). Two scenarios, both
+`constant-arrival-rate` at 10/s: `warmup` for `WARMUP` seconds (default 20), then
+`measure` for `DURATION` seconds (default 300), starting right after. Only
+`measure` counts. `preAllocatedVUs` is 10 (one second of arrivals) and `maxVUs`
+50; at about 10 ms per request fewer than one VU is busy on average. Thresholds
+on the `measure` scenario only:
+
+- `http_req_duration` p95 < 100 ms per endpoint tag and overall,
+- `http_req_failed` rate == 0, per endpoint and overall,
+- `dropped_iterations` == 0. This is k6's equivalent of our generator-lag check:
+  k6 drops an iteration when it cannot start it on time, and then the run is not
+  valid.
+
+k6 exits with 99 when a threshold fails. The base URL, `WARMUP`, `DURATION`,
+`SUMMARY_OUT` and `K6_VERSION` come from `-e` options. The harness runs it with
+`--no-usage-report`, so k6 sends no usage statistics.
+
+**Results** in `perf/results/`, prefixed with `RESULTS_PREFIX`:
+
+| File | Content |
+| --- | --- |
+| `<prefix>-constant-seed<n>.json` / `.csv` / `.txt` | Our runs, as in the official session. |
+| `<prefix>-k6-run<n>.json` | k6 report: per endpoint requests, errors and `http_req_duration` p50/p95/p99/max/mean; `http_req_blocked` and `http_req_connecting`; `dropped_iterations`; failed thresholds; metadata (k6 version, VUs, rate); and the full k6 summary under `k6_summary`. |
+| `<prefix>-k6-run<n>.txt` | The per-endpoint table k6 printed. |
+| `<prefix>-k6-run<n>.log` | k6's log, including one `request_error` line per failed request with its scenario, endpoint, status, k6 `error_code` and message. |
+| `<prefix>-comparison.txt` | The output of `compare_k6.py`. |
+| `<prefix>-vmstat.txt`, `-top.txt`, `-free-*.txt`, `-server.log` | As in the official session. |
+
+**Reading the comparison, `compare_k6.py`.**
+
+```bash
+uv run python perf/compare_k6.py --prefix k6cross [--tolerance-ms 5]
+```
+
+- **One table per pair:** per endpoint and `OVERALL`, our p50/p95/p99 next to
+  k6's, the p95 difference (k6 − ours, in ms; negative means k6 measured less)
+  and the error count on each side. Above the table: our generator lag p99 and
+  suspensions, and k6's `dropped_iterations`.
+- A pair is **not comparable** if our run is INVALID (lag or suspension), had any
+  suspension, or k6 dropped iterations. Errors do not make a pair not comparable;
+  they are shown on both sides.
+- **Overall:** per endpoint, the mean over comparable pairs of each side's
+  percentiles and of the difference, and the total errors.
+- **Summary line:** the largest |k6 − ours| p95 difference and whether every one
+  is within the tolerance (default 5 ms); the `OVERALL` p95 difference per pair
+  and whether it has the same sign in all pairs; how many endpoint comparisons
+  have k6 higher or lower; and the errors on each side. Exit code `0` when every
+  comparable p95 difference is within the tolerance, `1` otherwise.
+
+Agreement within a few ms supports our tool. A small, consistent negative
+difference (k6 lower) is expected from the definitions above. A large or
+inconsistent difference means one of the tools is measuring something else.
+
+**Limitations.**
+
+- **No seed.** k6 picks endpoints and ids with `Math.random`, so it does not send
+  the same request sequence as our tool. The comparison is between
+  distributions, not individual requests. With about 270 requests per endpoint
+  per run, the per-endpoint p95 moves by a few ms from sampling alone (see the
+  confidence intervals in our reports), so per-endpoint differences of that size
+  are noise; the `OVERALL` row and the sign across pairs say more.
+- **Different HTTP client and connection handling.** k6 uses Go's HTTP client
+  with connections per VU, so it may hold several connections where our tool
+  mostly holds one. k6's settings are left at their defaults (connections are
+  reused). k6 keeps idle connections longer than uvicorn's 5 s keep-alive, so the
+  [keep-alive race](#keep-alive-race) may appear in k6 runs. Settings are not
+  changed to hide such errors: they are recorded with their error codes and
+  messages and reported.
+- **Same machine.** Both tools share the laptop with the server, as in the
+  official session. Adjacent pairs reduce, but do not remove, differences in
+  machine state between the two runs of a pair.
