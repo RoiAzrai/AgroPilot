@@ -347,3 +347,55 @@ and why.
      our Python client reads a much bigger body.
 - **Why:** Writing predictions first keeps the analysis honest: results are
   compared with what we expected, and wrong predictions are explained, not hidden.
+
+## 24. Scale experiment results compared with the predictions
+- **Agent suggested:** The results are clean enough to read as they are: all 12
+  runs valid, no errors, no backlog, so nothing needs re-running. Its own
+  estimate for GET /v1/plots in entry 23 (above 100 ms) was wrong; the outcome
+  was p95 66-80 ms. It had scaled the 10,000-plot timings linearly, taking the
+  0.3-0.8 s range at face value. That range included a cold first request
+  (0.85 s); the steady idle requests (0.33-0.43 s) scale to about 66-86 ms, which
+  is close to what was measured, and it also expected queueing to add on top,
+  which at a utilization of 0.11-0.15 it barely did. On the mixed
+  Poisson-vs-constant result it checked the seed 2 pair: the median service time
+  of the light endpoints jumped from 5.0 ms (Poisson) to 10.7 ms (constant)
+  between the two adjacent runs, against 6.1-7.7 ms in the other four runs, so
+  the machine changed state within that pair. On the k6 cross-check it sees the
+  missed 5 ms tolerance as a real result, not a near miss to explain away: the
+  offset is consistent (our tool higher in 32 of 33 comparisons, about 5 ms on
+  light endpoints), so it is a systematic bias of our tool, and its direction
+  (overstating latency) is the safe one for an NFR verdict.
+- **I decided:** Record the results against the predictions as they are, and keep
+  the pre-set 5 ms k6 tolerance unchanged even though it was not met.
+- **Why:** Results at 2,000 plots (~150 farms), sessions large2k-paired and
+  large2k-k6 on commit fca946e: 12 runs, all valid, 0 errors, 0 restarts, drain
+  0.1-0.2 s before every run.
+  1. By-id and catalogue endpoints: p95 about 16-19 ms - consistent with
+     prediction 1.
+  2. ?farm_id=: p95 17-20 ms - consistent with prediction 2.
+  3. GET /v1/farms: p95 18-21 ms - consistent with prediction 3.
+  4. GET /v1/plots (~603 KB): p95 66-80 ms with Poisson; k6 measured 64-69 ms.
+     Close to the limit but below it - consistent with prediction 4 as written;
+     the agent's estimate of "above 100 ms" did not hold, because it scaled the
+     10,000-plot dry-run timings (0.3-0.8 s on an idle server, including a slow
+     first request) and expected queueing on top.
+  5. No collapse and no backlog; utilization about 0.11-0.15 - consistent with
+     prediction 5.
+  6. Poisson vs constant: mixed on overall p95 (+3.5, -9.7, +4.0 ms), because one
+     heavy endpoint (about 9% of requests) dominates the overall percentile, and
+     the seed 2 pair was disturbed by a machine-state change within the pair. On
+     the p99 of GET /v1/plots, Poisson was higher in all three pairs (+8, +21,
+     +12 ms) - the tail effect queueing theory predicts. Partly consistent.
+  7. Our tool vs k6: our tool reads higher in 32 of 33 endpoint comparisons, so it
+     stays on the pessimistic side. The offset was about 5 ms on light endpoints
+     and about 2 ms on GET /v1/plots - the opposite of prediction 7, which is
+     therefore wrong. The largest difference was 5.9 ms, above the pre-set 5 ms
+     tolerance, so the cross-check did not meet its criterion at this scale.
+     Hypotheses, not tested: our client's overhead is mostly per request, not per
+     byte; its single event loop, busy reading large bodies, records the end of
+     concurrent small requests late; and the machine was slower in that session.
+  The criterion is not changed after seeing the data. The NFR-1.1 conclusion is
+  unaffected, because the bias is toward overstating latency. Overall: the service
+  meets NFR-1.1 at 500 times the spec's data volume (worst p95 80.1 ms), confirmed
+  independently by k6, and collapses at 10,000 plots. Recommendations for the PR,
+  not to implement here: pagination for list endpoints, and more than one worker.

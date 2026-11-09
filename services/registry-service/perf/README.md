@@ -593,6 +593,50 @@ about 600 KB), the drain times, utilization, the Poisson-vs-constant gap, and th
 difference between our tool and k6. The predictions were written down before the
 runs, in the judgment log (entry 21 for 10,000 plots, entry 23 for 2,000).
 
+### Results (2,000 plots)
+
+Sessions `large2k-paired` (Poisson/constant, seeds 1-3) and `large2k-k6` (our
+constant runs and k6, three pairs), commit `fca946e`. All 12 runs valid, 0 errors,
+0 restarts, drain 0.1-0.2 s before every run, utilization 0.11-0.15.
+
+p95 per endpoint in ms, range over the runs. Our columns are latency from the
+scheduled send time (the verdict metric); k6 is `http_req_duration`, measured from
+the actual send, so it does not include generator lag and uses a different
+client (see [Cross-check with k6](#cross-check-with-k6)).
+
+| Endpoint | Ours, Poisson (3 runs) | Ours, constant (6 runs) | k6 (3 runs) |
+| --- | ---: | ---: | ---: |
+| `farms_list` | 17.9–20.9 | 17.5–18.7 | 11.5–11.6 |
+| `farm_by_id` | 15.8–17.7 | 16.0–16.8 | 9.3–9.4 |
+| `plots_list` | 66.1–80.1 | 64.9–71.0 | 64.2–68.9 |
+| `plot_by_id` | 16.1–18.3 | 16.0–16.6 | 9.5–9.7 |
+| `plots_by_farm` | 17.0–20.0 | 16.9–17.5 | 10.5–10.8 |
+| `crops_list` | 15.6–18.4 | 15.5–16.4 | 9.1–9.3 |
+| `crop_by_id` | 16.0–18.9 | 15.9–16.6 | 9.1–9.4 |
+| `soils_list` | 17.2–18.9 | 15.9–16.5 | 9.1–9.4 |
+| `soil_by_id` | 16.3–16.9 | 15.7–16.5 | 9.3–9.4 |
+| `emitters_list` | 17.1–19.3 | 15.8–16.7 | 9.1–9.4 |
+| `emitter_by_id` | 16.1–18.0 | 15.9–16.8 | 9.3–9.8 |
+| **OVERALL** | 37.2–45.0 | 41.1–49.0 | 40.1–46.0 |
+
+- **Worst p95:** 80.1 ms (`plots_list`, Poisson seed 1), below the 100 ms limit.
+  All three Poisson runs pass. `GET /v1/plots` returns about 603 KB.
+- **k6 cross-check** (our service time vs `http_req_duration`, `compare_k6.py`):
+  our tool reads higher in 32 of 33 endpoint comparisons, by about 5 ms on the
+  light endpoints and about 2 ms on `GET /v1/plots`. The largest difference is
+  5.9 ms, above the 5 ms tolerance set before the run, so the cross-check **did not
+  meet its criterion** at this scale. The criterion was not changed afterwards.
+  The bias is toward overstating latency, so the NFR-1.1 conclusion is
+  unaffected.
+- **Poisson vs constant:** mixed on overall p95 (+3.5, −9.7, +4.0 ms; the seed 2
+  pair was disturbed by a change in machine state within the pair). On the p99 of
+  `GET /v1/plots`, Poisson was higher in all three pairs (+8, +21, +12 ms).
+- **10,000 plots:** the server collapsed (see below).
+- **Recommendations for the PR,** not implemented here: pagination for the list
+  endpoints, and more than one worker.
+
+The results against the predictions are in the judgment log, entry 24.
+
 ### Finding: 10,000 plots collapsed the server
 
 A dry run of the paired session on the 10,000-plot database (2 s warm-up, 10 s
