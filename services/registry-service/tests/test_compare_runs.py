@@ -127,3 +127,26 @@ def test_main_prints_both_sections(tmp_path, session, capsys):
 
 def test_main_without_reports(tmp_path, capsys):
     assert main(["--prefix", "nothing", "--results-dir", str(tmp_path)]) == 1
+
+
+DRAIN = (
+    "run\tdrain_s\tprobes\trestarted\tstatus\n"
+    "paired2-poisson-seed1\t0.4\t2\tno\tdrained\n"
+    "paired2-constant-seed1\t612.3\t9\tyes\tdrained\n"
+)
+
+
+def test_main_prints_the_drain_record(tmp_path, session, capsys):
+    write_session(tmp_path, "paired2", list(session.values()))
+    (tmp_path / "paired2-drain.txt").write_text(DRAIN)
+    main(["--prefix", "paired2", "--results-dir", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert "Drain before each run" in out
+    assert "paired2-constant-seed1             612.3 s  probes   9  restart yes  drained" in out
+    assert "restarts: 1; not drained: 0" in out
+
+
+def test_main_without_a_drain_record(tmp_path, session, capsys):
+    write_session(tmp_path, "paired2", list(session.values()))
+    main(["--prefix", "paired2", "--results-dir", str(tmp_path)])
+    assert "no drain record for this session" in capsys.readouterr().out

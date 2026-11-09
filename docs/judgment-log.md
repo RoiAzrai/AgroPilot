@@ -277,3 +277,73 @@ and why.
   tools in the same machine state. k6 has no seed, so we compare distributions,
   not identical request sequences. Installing without sudo keeps the agent
   without administrator rights.
+
+## 21. Scale experiment with 10,000 plots (predictions written before running)
+- **Agent suggested:** Generate the data with a seeded script that writes a
+  separate copy of the database (never registry.db), validates every plot with
+  the service's own PlotCreate model and inserts it in one transaction, then run
+  the existing sessions against it through REGISTRY_DB_PATH. Within the
+  prescribed design it chose a lognormal with median 9 and sigma 0.7 before
+  scaling (58% of farms end up with 5-15 plots, the largest has 140), made the
+  generator refuse an existing file, and records each run's database row counts
+  through the API's list endpoints, so the load tool stays black-box.
+- **I decided:** One scale level: 10,000 plots across about 750 farms, with a
+  lognormal plots-per-farm distribution, values inside FR-1.3 and validated with
+  the service's own model, generated reproducibly from a seed. Run the paired
+  Poisson/constant session and the k6 cross-check once each on it. This is an
+  experiment, not the official NFR-1.1 result, which stays on the spec's seed DB.
+- **Why:** The seed has 4 plots, so it cannot show how the service behaves with
+  realistic data volumes. Predictions, written before running:
+  1. By-id and catalogue endpoints barely change (primary-key lookups; catalogues
+     do not grow).
+  2. ?farm_id= rises slightly, depending on farm size (index from
+     UNIQUE(farm_id, name)).
+  3. GET /v1/farms rises moderately.
+  4. GET /v1/plots rises sharply and likely exceeds 100 ms p95, because it
+     returns every plot (no pagination in the spec) - a finding that pagination
+     would be needed at this size, not a failure of the assignment.
+  5. Server utilization rises, so the Poisson-vs-constant gap should be larger
+     than the ~1 ms seen at ~10% utilization.
+  6. The ~2 ms offset between our tool and k6 may grow for the large plots list,
+     since our Python client has to read a much bigger body.
+
+## 22. The 10,000-plot dry run collapsed; scale reduced to 2,000
+- **Agent suggested:** It found that GET /v1/plots returns about 3 MB and takes
+  0.3-0.8 s even on an idle server. Under load the server saturated: p95 rose to
+  hundreds of ms or seconds even on light endpoints, abandoned client requests
+  kept running on the server, and the backlog outlasted each run (one request took
+  125 s after a run), so three of six runs could not start. It proposed waiting for
+  the server to drain before each run.
+- **I decided:** Record this as a qualitative finding, and run the full sessions at
+  2,000 plots (~150 farms) instead. Add a drain wait before each run (restart after
+  10 minutes), and give setup a longer timeout than measurement.
+- **Why:** The spec defines no data volume; NFR-1.1 is measured on the spec's seed
+  database and already passed. 2,000 plots was chosen as a plausible size for this
+  stage (one region or cooperative), not because 10,000 failed; the 10,000 result
+  stays on record. The collapse is the queueing "hockey stick": near full
+  utilization, small bursts build a queue that does not clear. One heavy endpoint
+  slows the light ones, because a single Python worker serializes a large response
+  while other requests wait behind it, and a client giving up does not stop the
+  server's work. Findings for the PR, not to implement here: pagination for list
+  endpoints, and more than one worker.
+
+## 23. Predictions for 2,000 plots (written before running)
+- **Agent suggested:** The same structure as entry 21, with predictions scaled to
+  2,000 plots. Its own estimate differed on prediction 4: scaling the idle timing
+  at 10,000 plots (0.3-0.8 s for about 3 MB) linearly gives roughly 60-170 ms per
+  GET /v1/plots at 2,000 plots (about 600 KB) even before any queueing, so it
+  expected that p95 to be above 100 ms rather than near it.
+- **I decided:** Predictions, written before the official runs:
+  1. By-id and catalogue endpoints rise a little, mainly from sharing the server
+     with the heavier list requests.
+  2. ?farm_id= stays close to the seed result (similar plots per farm).
+  3. GET /v1/farms rises slightly (~150 farms).
+  4. GET /v1/plots (~600 KB) rises sharply; its p95 is near the 100 ms limit and
+     may exceed it.
+  5. No collapse and no backlog between runs; utilization stays well below 1.
+  6. The Poisson-vs-constant gap is somewhat larger than ~1 ms, mostly on
+     GET /v1/plots and in the tail.
+  7. The ~2 ms offset between our tool and k6 is larger for GET /v1/plots, since
+     our Python client reads a much bigger body.
+- **Why:** Writing predictions first keeps the analysis honest: results are
+  compared with what we expected, and wrong predictions are explained, not hidden.

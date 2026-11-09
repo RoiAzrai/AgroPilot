@@ -27,6 +27,31 @@ def load_session(results_dir: Path, prefix: str) -> dict[tuple[str, int], dict]:
     return runs
 
 
+def load_drain(results_dir: Path, prefix: str) -> list[dict] | None:
+    """Rows of <prefix>-drain.txt (written by the harness before each run), or None."""
+    path = results_dir / f"{prefix}-drain.txt"
+    if not path.exists():
+        return None
+    lines = path.read_text().splitlines()
+    header = lines[0].split("\t")
+    return [dict(zip(header, line.split("\t"))) for line in lines[1:] if line]
+
+
+def format_drain(rows: list[dict] | None) -> list[str]:
+    if rows is None:
+        return ["", "Drain before each run: no drain record for this session."]
+    lines = ["", "Drain before each run (GET /v1/plots within 2 s twice in a row)"]
+    lines += [
+        f"  {row['run']:<32} {float(row['drain_s']):>7.1f} s  probes {row['probes']:>3}  "
+        f"restart {row['restarted']:<3}  {row['status']}"
+        for row in rows
+    ]
+    restarts = sum(row["restarted"] == "yes" for row in rows)
+    not_drained = sum(row["status"] != "drained" for row in rows)
+    lines.append(f"  restarts: {restarts}; not drained: {not_drained}")
+    return lines
+
+
 def p95_of(report: dict, endpoint: str = "OVERALL") -> float | None:
     return report["endpoints"][endpoint]["latency_ms"]["p95"]
 
@@ -168,6 +193,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"No {args.prefix}-*.json reports in {args.results_dir}", file=sys.stderr)
         return 1
     print(format_session(runs))
+    print("\n".join(format_drain(load_drain(args.results_dir, args.prefix))))
     return 0 if official_result(runs)["passed"] else 1
 
 

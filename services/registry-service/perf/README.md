@@ -30,10 +30,12 @@ measurement, so it takes about 5½ minutes. `perf/results/` is in `.gitignore`.
 | `--seed` | `1` | Seeds the schedule. The same seed gives the same run. |
 | `--warmup` | `20` | Seconds of load that are sent but left out of the results. |
 | `--duration` | `300` | Seconds of measured load. |
-| `--timeout` | `5` | Per-request timeout, in seconds. |
+| `--timeout` | `5` | Per-request timeout for measured requests, in seconds. |
+| `--setup-timeout` | `120` | Per-request timeout for the id discovery at start-up, in seconds. Discovery is preparation, not measurement; with a large database a list can take seconds on a busy server. |
 | `--threshold-ms` | `100` | p95 limit for every endpoint. |
 | `--max-lag-ms` | `10` | Generator lag p99 limit (10% of the 100 ms budget). Above it, the run is INVALID. |
 | `--keepalive-expiry` | `4` | Client idle keep-alive, in seconds. Must be shorter than the server's (uvicorn: 5 s); see [Keep-alive race](#keep-alive-race). |
+| `--db-label` | `unspecified` | Which database the service uses (for example `seed` or `large`). Recorded in the metadata with the row counts the API returns. |
 | `--out` | none | Writes the JSON summary to this file, and the per-request timeline next to it (same name, `.csv`). |
 
 Exit codes: `0` pass, `1` NFR failed (p95 over the limit, or any error), `2`
@@ -73,19 +75,35 @@ It takes about 35 minutes. The script:
    - Fails if port 8000 is already in use.
    - Prints the Windows preparation reminder and waits for Enter.
      `ASSUME_YES=1` skips the prompt, for dry runs.
-2. **Server.** Runs `bash seed_registry.sh`, then starts
+2. **Server.** Runs `bash seed_registry.sh` (or builds the large database, see
+   [Scale experiment](#scale-experiment-2000-plots)), then starts
    `uv run uvicorn main:app --host 127.0.0.1 --port 8000 --log-level warning` in
    the background and waits up to 30 s for `/health`.
 3. **Monitors.** Starts `vmstat -t -w 1` (CPU, run queue, swap, steal, every
    second) and `top -b -d 5 -o %CPU` (all processes by CPU, every 5 s), and saves
    `free -m` before and after.
 4. **Runs,** in this order: Poisson seed 1, constant seed 1, Poisson seed 2,
-   constant seed 2, Poisson seed 3, constant seed 3. A failed or INVALID run is
-   recorded and the script carries on, so one bad run does not lose the rest.
+   constant seed 2, Poisson seed 3, constant seed 3. Before each run it waits for
+   the server to drain (see below). A failed or INVALID run is recorded and the
+   script carries on, so one bad run does not lose the rest.
 5. **Summary.** One line per run (name, exit code, overall p95, lag p99,
-   suspensions, verdict).
+   suspensions, verdict), then the drain time before each run.
 6. **Session comparison.** Runs `compare_runs.py` (see below) and saves its output,
    then prints the total time.
+
+**Drain wait.** Before each run, the harness probes `GET /v1/plots` (timeout
+120 s per probe) until it answers within 2 s twice in a row, and records how long
+that took. This keeps work left over from the previous run out of the next one:
+when a client gives up on a request, the server still finishes it, so an
+overloaded server can stay busy long after a run ends (see
+[the 10,000-plot finding](#finding-10000-plots-collapsed-the-server)). If the
+server has not drained after 10 minutes, the harness restarts it once (same
+command, same database file), waits for `/health`, records the restart, and
+probes again. If it still has not drained after another 10 minutes, the run goes
+ahead and is recorded as `NOT drained`. Each run's line (drain time, number of
+probes, restart, status) goes to `<prefix>-drain.txt`, and appears in the
+summary and in the comparison output. On the seed database a probe takes a few
+milliseconds, so seed sessions are effectively unchanged.
 
 The server and the monitors are stopped on exit, including on failure or
 Ctrl+C.
@@ -99,7 +117,8 @@ Ctrl+C.
 | `<prefix>-comparison.txt` | The session comparison. |
 | `<prefix>-vmstat.txt`, `<prefix>-top.txt` | System monitors for the whole session. |
 | `<prefix>-free-before.txt`, `<prefix>-free-after.txt` | Memory before and after. |
-| `<prefix>-server.log` | Server output (warnings and errors only). |
+| `<prefix>-server.log` | Server output (warnings and errors only), including after a restart. |
+| `<prefix>-drain.txt` | Drain before each run: run, seconds, probes, restart (yes/no), status. |
 
 **Dry run.** Environment overrides shorten it: `WARMUP` (default 20),
 `DURATION` (default 300), `RESULTS_PREFIX` (default `paired`) and `ASSUME_YES`.
@@ -141,6 +160,8 @@ It reads `perf/results/<prefix>-*.json` and prints two sections:
   marked *not comparable* if either run is INVALID or had a suspension. A summary
   line says whether the difference has the same sign in all comparable pairs,
   and in how many pairs the two intervals overlap.
+- **Drain before each run,** from `<prefix>-drain.txt`, with the number of
+  restarts and of runs that did not drain.
 
 ## How it works
 
@@ -171,14 +192,19 @@ It reads `perf/results/<prefix>-*.json` and prints two sections:
 ## Reading the report
 
 1. **Metadata.** Start time, commit (with `+dirty` if the tree had uncommitted
-   changes), Python version, OS/kernel, CPU, and every run parameter.
+   changes), Python version, OS/kernel, CPU, every run parameter, the database
+   label (`db`) and its row counts (`db_rows`: the length of each list endpoint at
+   start-up, read through the API like the ids).
 2. **Latency table.** Per endpoint and `OVERALL`: requests, errors, p50, p95 with
    its 95% confidence interval as `p95 [low, high]`, p99, max and mean, in ms. The
    verdict is based on this table and uses the point p95, as the spec says. One
    informational line follows: whether the upper bound of every endpoint's
    interval is also within the limit.
 3. **Service-time table.** The same columns, measured from the actual send. When
-   it is close to the latency table, the requests left on time.
+   it is close to the latency table, the requests left on time. Then the **mean
+   response size** per endpoint, in KB (1 KB = 1024 bytes of response body), over
+   the responses that arrived. It is informational and does not affect the
+   verdict. In the JSON it is `mean_response_kb` in each endpoint row.
 4. **Errors by type and by detail.** Errors in the measurement window, by type:
    `timeout`, `connect_error`, `transport_error` (any other network failure), or
    `http_<status>` for a response other than 200. Then the same errors by detail:
@@ -290,6 +316,7 @@ one raw row per request, warm-up included, in schedule order.
 | `error` | Empty on success, otherwise the error type (see above). |
 | `in_window` | `1` if the request counts toward the results, `0` for warm-up. |
 | `error_detail` | Empty on success, otherwise the exception class and message with its cause, or `HTTP <status>`. |
+| `bytes` | Response body size in bytes, empty when no response arrived. |
 
 Use it to line stalls up against system data, such as `vmstat 1` recorded during
 the run.
@@ -407,8 +434,9 @@ state:
 
 `ours-constant-seed1, k6-run1, ours-constant-seed2, k6-run2, ours-constant-seed3, k6-run3`
 
-A failed run is recorded and the script carries on. It ends with a summary line
-per run and `compare_k6.py`.
+It waits for the server to drain before each run, as `run_official.sh` does. A
+failed run is recorded and the script carries on. It ends with a summary line
+per run, the drain times, and `compare_k6.py`, which also prints the drain record.
 
 **The k6 script, `perf/k6_mix.js`.** In `setup()` it reads the ids once through
 the API's list endpoints (black-box, like our tool). Two scenarios, both
@@ -424,8 +452,11 @@ on the `measure` scenario only:
   k6 drops an iteration when it cannot start it on time, and then the run is not
   valid.
 
-k6 exits with 99 when a threshold fails. The base URL, `WARMUP`, `DURATION`,
-`SUMMARY_OUT` and `K6_VERSION` come from `-e` options. The harness runs it with
+Like our tool, `setup()` has its own per-request timeout (`SETUP_TIMEOUT`,
+default 120 s, and k6's `setupTimeout` is raised to match); measured requests keep
+the 5 s timeout. k6 exits with 99 when a threshold fails. The base URL, `WARMUP`,
+`DURATION`, `SUMMARY_OUT`, `K6_VERSION`, `DB_LABEL` and `SETUP_TIMEOUT` come from
+`-e` options. The harness runs it with
 `--no-usage-report`, so k6 sends no usage statistics.
 
 **Results** in `perf/results/`, prefixed with `RESULTS_PREFIX`:
@@ -437,7 +468,7 @@ k6 exits with 99 when a threshold fails. The base URL, `WARMUP`, `DURATION`,
 | `<prefix>-k6-run<n>.txt` | The per-endpoint table k6 printed. |
 | `<prefix>-k6-run<n>.log` | k6's log, including one `request_error` line per failed request with its scenario, endpoint, status, k6 `error_code` and message. |
 | `<prefix>-comparison.txt` | The output of `compare_k6.py`. |
-| `<prefix>-vmstat.txt`, `-top.txt`, `-free-*.txt`, `-server.log` | As in the official session. |
+| `<prefix>-vmstat.txt`, `-top.txt`, `-free-*.txt`, `-server.log`, `-drain.txt` | As in the official session. |
 
 **Reading the comparison, `compare_k6.py`.**
 
@@ -482,3 +513,101 @@ inconsistent difference means one of the tools is measuring something else.
 - **Same machine.** Both tools share the laptop with the server, as in the
   official session. Adjacent pairs reduce, but do not remove, differences in
   machine state between the two runs of a pair.
+
+## Scale experiment: 2,000 plots
+
+**Why.** The seed database has 2 farms and 4 plots, so it cannot show how the
+service behaves with a realistic amount of data. The scale experiment runs the
+same two sessions (the paired Poisson/constant session and the k6 cross-check)
+against a large generated database. It is an experiment, not the official
+NFR-1.1 result, which stays on the spec's seed database.
+
+**The database: `make_large_db.py`.** It builds a separate copy; it never changes
+`seed_registry.sh` or `registry.db`, and it refuses to write to an existing file.
+
+```bash
+uv run python perf/make_large_db.py --out perf/results/large-registry.db [--plots 2000] [--farms 150] [--seed 1]
+# the 10,000-plot database of the first dry run, reproducible with:
+uv run python perf/make_large_db.py --out perf/results/large10k-registry.db --plots 10000 --farms 750
+```
+
+1. Runs `seed_registry.sh` into the output path, so the 2 seed farms, the 4 seed
+   plots and the catalogue (2 crops, 3 soils, 4 emitters) are there unchanged.
+   The catalogue tables are not touched after that.
+2. Adds generated farms and plots up to the totals (`--plots` and `--farms`
+   include the seed rows). Everything comes from one `random.Random(seed)`,
+   including the UUIDs (not `uuid4()`), and planting dates are counted back from
+   a fixed reference date (2026-11-01) instead of today, so the same seed always
+   gives the same database.
+3. Validates every generated plot with the service's own `PlotCreate` model, so
+   all data passes FR-1.3, and inserts everything in one transaction.
+4. Prints the row count per table, the plots-per-farm distribution (min,
+   median, p90, max, and how many farms have 5-15 plots), the file size, and the
+   approximate size of the full `GET /v1/plots` JSON body.
+
+With the defaults (2,000 plots, 150 farms, about 13 plots per farm on average):
+median 11 plots per farm, p90 26, max 56; a 0.6 MB database and a
+`GET /v1/plots` body of about 0.6 MB. With `--plots 10000 --farms 750` (same
+distribution): max 140 plots per farm, a 3 MB database and a 3 MB body.
+
+**Why 2,000.** The spec defines no data volume. 2,000 plots is a plausible size
+for this stage (one region or cooperative). It was not chosen because 10,000
+failed; the 10,000 result below stays on record (judgment log 22).
+
+**Assumptions.** These values are plausible modelling choices for a load test,
+not agronomic fact:
+
+| What | Assumption |
+| --- | --- |
+| Plots per farm | Lognormal (median 9 before scaling, σ = 0.7), scaled so the total is exact, each farm 1-200. Most farms have 5-15 plots; a few have many more. |
+| Location | Each farm has a centre drawn uniformly from a box roughly around Israel (lat 29.6-33.2, lon 34.3-35.8; the box also covers some sea and neighbouring land). Its plots lie uniformly within 2 km of the centre. |
+| Plot type and area | About 30% greenhouses, 400-2,000 m²; the rest open field, 2,000-30,000 m². |
+| Spacing | Row spacing 1.0-2.0 m, emitter spacing 0.2-0.5 m, uniform. |
+| Crop | Tomato or bell pepper, 50/50. |
+| Soil | Fixed weights: loam 50%, sand 30%, clay loam 20%. |
+| Emitter | Fixed weights: 1.0 L/h 40%, 1.6 L/h 30%, 0.6 L/h 20%, 2.0 L/h 10%. |
+| Planting date | Uniform over the 365 days before 2026-11-01, never in the future. |
+| Names | Farms `Farm 0001`...; plots `Block 001` or `Greenhouse 002`..., numbered within each farm, so names are unique per farm. |
+
+**Running the sessions on it.** Both harnesses take `DB=large` (the default is
+`DB=seed`, which is the official setup). With `DB=large`, the harness builds the
+default 2,000-plot database with `make_large_db.py` into `perf/results/<prefix>-registry.db` before
+starting the server, saves the generator's output to
+`perf/results/<prefix>-make-large-db.txt`, and starts the server with
+`REGISTRY_DB_PATH` pointing to that file. Everything else is unchanged. Every
+report records the database in its metadata (`db` and `db_rows`, in our reports
+and in the k6 reports).
+
+```bash
+cd services/registry-service
+DB=large RESULTS_PREFIX=large bash perf/run_official.sh
+DB=large RESULTS_PREFIX=large-k6 bash perf/run_k6_crosscheck.sh
+```
+
+Prepare the machine as for the official session. Each session takes about 35
+minutes.
+
+**What to look at.** The per-endpoint p95 against the seed-database sessions, the
+mean response size per endpoint (the `GET /v1/plots` body grows from under 1 KB to
+about 600 KB), the drain times, utilization, the Poisson-vs-constant gap, and the
+difference between our tool and k6. The predictions were written down before the
+runs, in the judgment log (entry 21 for 10,000 plots, entry 23 for 2,000).
+
+### Finding: 10,000 plots collapsed the server
+
+A dry run of the paired session on the 10,000-plot database (2 s warm-up, 10 s
+per run, VS Code open, so qualitative only) showed:
+
+- `GET /v1/plots` returns about 3 MB and takes 0.3-0.8 s even on an idle server.
+- Under load at 10 requests/s the server saturated. p95 rose to hundreds of ms
+  or seconds, on light endpoints too (by-id and catalogue requests wait behind
+  the heavy ones in the single Python worker).
+- Requests the client abandoned after its 5 s timeout kept running on the
+  server, and the backlog outlasted each run: a single `GET /v1/plots` right
+  after a 12 s run took 125 s. Three of the six runs could not even start,
+  because their id discovery timed out.
+
+This is the queueing "hockey stick": near full utilization, small bursts build a
+queue that does not clear. Findings for the PR, not implemented here: pagination
+for the list endpoints, and more than one worker. The harnesses now wait for the
+server to drain before each run, and id discovery has its own, longer timeout.

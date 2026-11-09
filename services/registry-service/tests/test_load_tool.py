@@ -24,9 +24,11 @@ from perf.load_test import (
     classify_error,
     describe_error,
     detect_suspensions,
+    endpoint_row,
     errors_by_detail,
     errors_by_type,
     find_stalls,
+    format_report,
     lag_stats,
     littles_law,
     parse_args,
@@ -451,3 +453,61 @@ def test_measures_a_known_latency(stub_url):
     low, high = overall["latency_ms"]["p95_ci"]
     assert low <= overall["latency_ms"]["p95"] <= high
     assert report["metadata"]["seed"] == 7
+
+
+# --- Response size and database metadata ------------------------------------------
+
+
+def test_mean_response_kb_counts_responses_that_arrived():
+    results = [
+        Result("farms_list", 0, 0, 0.1, True, 200, None, None, 1024),
+        Result("farms_list", 1, 1, 1.1, True, 200, None, None, 3072),
+        Result("farms_list", 2, 2, 2.1, False, 503, "http_503", "HTTP 503", 0),
+        Result("farms_list", 3, 3, 3.1, False, None, "timeout", "ReadTimeout: x"),
+    ]
+    assert endpoint_row(results)["mean_response_kb"] == pytest.approx(4096 / 3 / 1024)
+    assert endpoint_row([])["mean_response_kb"] is None
+
+
+def test_timeline_has_a_bytes_column(tmp_path):
+    path = tmp_path / "run.csv"
+    write_timeline(path, [
+        Result("farms_list", 0, 0, 0.1, True, 200, None, None, 512),
+        Result("farm_by_id", 1, 1, 1.007, False, None, "transport_error", "ReadError: x"),
+    ], 0, 10)
+    rows = list(csv.DictReader(path.open()))
+    assert [row["bytes"] for row in rows] == ["512", ""]
+
+
+def test_records_response_size_and_database(stub_url):
+    args = parse_args([
+        "--base-url", stub_url, "--rate", "20", "--warmup", "0.2", "--duration", "1",
+        "--db-label", "large",
+    ])
+    report = run(args)
+    # The stub answers lists with [{"id": "a"}, {"id": "b"}] (26 bytes), items with {"id": "a"} (11).
+    # plots_by_farm (/v1/plots?farm_id=...) has two slashes, so the stub treats it as a list.
+    sizes = {name: row["mean_response_kb"] for name, row in report["endpoints"].items()
+             if row["requests"] and name != "OVERALL"}
+    assert sizes
+    for name, kb in sizes.items():
+        assert kb == pytest.approx((11 if name.endswith("_by_id") else 26) / 1024), name
+    assert report["metadata"]["db"] == "large"
+    assert report["metadata"]["db_rows"] == {
+        "farms": 2, "plots": 2, "crops": 2, "soils": 2, "emitters": 2,
+    }
+    assert "Mean response size (KB, measurement window)" in format_report(report)
+
+
+def test_setup_has_its_own_longer_timeout(stub_url):
+    # Every stub response takes 50 ms: discovery (120 s timeout) succeeds, while every
+    # measured request (10 ms timeout) times out.
+    args = parse_args([
+        "--base-url", stub_url, "--rate", "10", "--warmup", "0", "--duration", "0.5",
+        "--timeout", "0.01",
+    ])
+    assert args.setup_timeout == 120
+    report = run(args)
+    assert report["metadata"]["setup_timeout_s"] == 120
+    assert report["metadata"]["timeout_s"] == 0.01
+    assert set(report["errors_by_type"]) == {"timeout"}

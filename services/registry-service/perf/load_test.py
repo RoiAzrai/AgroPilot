@@ -87,6 +87,7 @@ class Result:
     status: int | None
     error: str | None
     error_detail: str | None = None
+    bytes: int | None = None  # response body size; None when no response arrived
 
 
 @dataclass(frozen=True)
@@ -128,12 +129,16 @@ def build_schedule(
 # --- Running the load -----------------------------------------------------------
 
 
-async def discover_ids(client: httpx.AsyncClient) -> dict[str, list[str]]:
-    """Read ids through the API's own list endpoints (black-box: no database access)."""
+async def discover_ids(client: httpx.AsyncClient, timeout: float) -> dict[str, list[str]]:
+    """Read ids through the API's own list endpoints (black-box: no database access).
+
+    This is preparation, not measurement, so it has its own, longer timeout: with a
+    large database a list can take seconds on a busy server.
+    """
     ids = {}
     for source, path in ID_SOURCES.items():
         try:
-            response = await client.get(path)
+            response = await client.get(path, timeout=timeout)
         except httpx.HTTPError as exc:
             raise SetupError(f"GET {path} failed: {type(exc).__name__}") from exc
         if response.status_code != 200:
@@ -190,16 +195,17 @@ async def send(client: httpx.AsyncClient, arrival: Arrival, t0: float) -> Result
     """Send one request. Timeout, connection error or non-200 counts as an error."""
     loop = asyncio.get_running_loop()
     sent = loop.time() - t0
-    status, failure = None, None
+    status, failure, size = None, None, None
     try:
-        status = (await client.get(arrival.path)).status_code
+        response = await client.get(arrival.path)
+        status, size = response.status_code, len(response.content)
     except httpx.HTTPError as exc:
         failure = exc
     done = loop.time() - t0
     error = classify_error(failure, status)
     return Result(
         arrival.endpoint, arrival.t, sent, done, error is None, status, error,
-        describe_error(failure, status),
+        describe_error(failure, status), size,
     )
 
 
@@ -287,6 +293,12 @@ def add_p95_ci(rows: dict[str, dict], measured: list[Result], seed: int) -> None
         rows[name]["latency_ms"]["p95_ci"] = bootstrap_ci(latencies, rng)
 
 
+def mean_kb(results: list[Result]) -> float | None:
+    """Mean response body size in KB (1 KB = 1024 bytes), over responses that arrived."""
+    sizes = [r.bytes for r in results if r.bytes is not None]
+    return statistics.fmean(sizes) / 1024 if sizes else None
+
+
 def endpoint_row(results: list[Result]) -> dict:
     """Latency is measured from the scheduled time; service time from the actual send."""
     ok = [r for r in results if r.ok]
@@ -295,6 +307,7 @@ def endpoint_row(results: list[Result]) -> dict:
         "errors": len(results) - len(ok),
         "latency_ms": distribution_ms([r.done - r.scheduled for r in ok]),
         "service_ms": distribution_ms([r.done - r.sent for r in ok]),
+        "mean_response_kb": mean_kb(results),
     }
 
 
@@ -448,12 +461,14 @@ def write_timeline(path: Path, results: list[Result], start: float, end: float) 
         writer = csv.writer(file)
         writer.writerow([
             "scheduled", "sent", "done", "endpoint", "status", "error", "in_window", "error_detail",
+            "bytes",
         ])
         for r in sorted(results, key=lambda r: r.scheduled):
             writer.writerow([
                 f"{r.scheduled:.6f}", f"{r.sent:.6f}", f"{r.done:.6f}", r.endpoint,
                 r.status if r.status is not None else "", r.error or "",
                 int(start <= r.scheduled < end), r.error_detail or "",
+                r.bytes if r.bytes is not None else "",
             ])
 
 
@@ -522,7 +537,9 @@ def cpu_model() -> str:
     return platform.processor() or "unknown"
 
 
-def run_metadata(args: argparse.Namespace, started_at: datetime) -> dict:
+def run_metadata(
+    args: argparse.Namespace, started_at: datetime, db_rows: dict[str, int] | None = None
+) -> dict:
     return {
         "started_at": started_at.isoformat(timespec="seconds"),
         "commit": git_commit(),
@@ -535,10 +552,14 @@ def run_metadata(args: argparse.Namespace, started_at: datetime) -> dict:
         "warmup_s": args.warmup,
         "duration_s": args.duration,
         "timeout_s": args.timeout,
+        "setup_timeout_s": args.setup_timeout,
         "threshold_ms": args.threshold_ms,
         "max_lag_ms": args.max_lag_ms,
         "keepalive_expiry_s": args.keepalive_expiry,
         "base_url": args.base_url,
+        "db": args.db_label,
+        # Row counts as the API returns them (black-box: the length of each list endpoint).
+        "db_rows": db_rows,
     }
 
 
@@ -546,7 +567,8 @@ async def measure(args: argparse.Namespace) -> tuple[dict, list[Result]]:
     """Discover ids, run warm-up plus measurement, and build the report."""
     started_at = datetime.now(timezone.utc)
     async with build_client(args) as client:
-        ids = await discover_ids(client)
+        ids = await discover_ids(client, args.setup_timeout)
+        db_rows = {source: len(values) for source, values in ids.items()}
         schedule = build_schedule(
             args.rate, args.warmup + args.duration, args.arrival, args.seed, ids
         )
@@ -563,7 +585,7 @@ async def measure(args: argparse.Namespace) -> tuple[dict, list[Result]]:
     suspensions = detect_suspensions(beats, end)
     exit_code, reasons = verdict(rows, lag, args.threshold_ms, suspensions)
     report = {
-        "metadata": run_metadata(args, started_at),
+        "metadata": run_metadata(args, started_at, db_rows),
         "endpoints": rows,
         "ci_upper_above_threshold": ci_upper_above(rows, args.threshold_ms),
         "errors_by_type": errors_by_type(measured),
@@ -673,6 +695,11 @@ def format_report(report: dict) -> str:
     )
     lines += ["", "Service time from actual send time (ms)"]
     lines += format_table(report["endpoints"], "service_ms")
+    lines += ["", "Mean response size (KB, measurement window)"]
+    lines += [
+        f"{name:<15}{_fmt(row.get('mean_response_kb'), 2):>10}"
+        for name, row in report["endpoints"].items()
+    ]
     errors = report["errors_by_type"]
     lines += ["", "Errors by type (measurement window)"]
     lines += [f"  {kind:<16}{count}" for kind, count in errors.items()] or ["  none"]
@@ -713,6 +740,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--warmup", type=float, default=20.0, help="seconds, excluded")
     parser.add_argument("--duration", type=float, default=300.0, help="measured seconds")
     parser.add_argument("--timeout", type=float, default=5.0, help="per request, seconds")
+    parser.add_argument(
+        "--setup-timeout", type=float, default=120.0,
+        help="per request during id discovery (preparation, not measured), seconds",
+    )
     parser.add_argument("--threshold-ms", type=float, default=100.0, help="p95 limit")
     parser.add_argument(
         "--max-lag-ms", type=float, default=10.0,
@@ -721,6 +752,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--keepalive-expiry", type=float, default=4.0,
         help="client idle keep-alive, seconds; must be shorter than the server's (uvicorn: 5 s)",
+    )
+    parser.add_argument(
+        "--db-label", default="unspecified",
+        help="which database the service uses, recorded in the metadata (e.g. seed, large)",
     )
     parser.add_argument(
         "--out", type=Path,

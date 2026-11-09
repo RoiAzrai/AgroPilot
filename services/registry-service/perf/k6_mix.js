@@ -40,6 +40,10 @@ const DURATION = parseInt(__ENV.DURATION || '300', 10);
 const RATE = 10; // requests per second, as NFR-1.1 and load_test.py
 const SUMMARY_OUT = __ENV.SUMMARY_OUT || 'perf/results/k6-summary.json';
 const K6_VERSION = __ENV.K6_VERSION || 'unknown (pass -e K6_VERSION)';
+const DB_LABEL = __ENV.DB_LABEL || 'unspecified'; // which database the service uses
+// setup() is preparation, not measurement: with a large database a list can take
+// seconds on a busy server, so it gets its own, longer per-request timeout.
+const SETUP_TIMEOUT = parseInt(__ENV.SETUP_TIMEOUT || '120', 10); // seconds, per request
 
 // One iteration = one request, so at 10/s with ~10-20 ms responses fewer than one
 // VU is busy on average. 10 pre-allocated VUs (one second's worth of arrivals) and
@@ -110,6 +114,8 @@ export const options = {
     measure: scenario(WARMUP, DURATION), // starts right after the warm-up
   },
   thresholds,
+  // setup() makes 5 list requests of up to SETUP_TIMEOUT each (k6's default limit is 60 s).
+  setupTimeout: `${5 * SETUP_TIMEOUT + 30}s`,
   summaryTrendStats: ['count', 'min', 'med', 'avg', 'p(50)', 'p(95)', 'p(99)', 'max'],
 };
 
@@ -120,7 +126,10 @@ export function setup() {
   // Ids through the API's own list endpoints (black-box), once, like discover_ids().
   const ids = {};
   for (const [source, path] of Object.entries(ID_SOURCES)) {
-    const res = http.get(`${BASE_URL}${path}`, { tags: { endpoint: 'setup' } });
+    const res = http.get(`${BASE_URL}${path}`, {
+      tags: { endpoint: 'setup' },
+      timeout: `${SETUP_TIMEOUT}s`,
+    });
     if (res.status !== 200) {
       throw new Error(`GET ${path} returned ${res.status} ${res.error || ''}`);
     }
@@ -212,7 +221,13 @@ function buildReport(data) {
       pre_allocated_vus: PRE_ALLOCATED_VUS,
       max_vus: MAX_VUS,
       timeout_s: 5,
+      setup_timeout_s: SETUP_TIMEOUT,
       seed: null,
+      db: DB_LABEL,
+      // Row counts as the API returned them in setup() (black-box, like load_test.py).
+      db_rows: data.setup_data
+        ? Object.fromEntries(Object.entries(data.setup_data).map(([k, v]) => [k, v.length]))
+        : null,
     },
     endpoints,
     // Time outside http_req_duration: waiting for a connection, and TCP setup.

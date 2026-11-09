@@ -163,3 +163,15 @@ def test_main_not_comparable_and_outside_tolerance(results, capsys):
 
 def test_main_without_pairs(tmp_path, capsys):
     assert main(["--prefix", "nothing", "--results-dir", str(tmp_path)]) == 1
+
+
+def test_main_prints_the_drain_record(results, capsys):
+    (results / "x-drain.txt").write_text(
+        "run\tdrain_s\tprobes\trestarted\tstatus\n"
+        "x-constant-seed1\t0.3\t2\tno\tdrained\n"
+        "x-k6-run1\t605.0\t12\tyes\tNOT drained\n"
+    )
+    main(["--prefix", "x", "--results-dir", str(results)])
+    out = capsys.readouterr().out
+    assert "x-k6-run1                          605.0 s  probes  12  restart yes  NOT drained" in out
+    assert "restarts: 1; not drained: 1" in out

@@ -5,6 +5,7 @@
 # Run it from a plain terminal, VS Code closed:
 #   cd services/registry-service && bash perf/run_k6_crosscheck.sh
 # Dry run: WARMUP=2 DURATION=10 ASSUME_YES=1 RESULTS_PREFIX=k6dry bash perf/run_k6_crosscheck.sh
+# Scale experiment (10,000 plots): DB=large RESULTS_PREFIX=large-k6 bash perf/run_k6_crosscheck.sh
 
 set -euo pipefail
 
@@ -14,6 +15,7 @@ WARMUP="${WARMUP:-20}"
 DURATION="${DURATION:-300}"
 RESULTS_PREFIX="${RESULTS_PREFIX:-k6cross}"
 ASSUME_YES="${ASSUME_YES:-0}"
+DB="${DB:-seed}"  # seed: seed_registry.sh into registry.db; large: perf/make_large_db.py (10,000 plots)
 RESULTS=perf/results
 BASE_URL=http://127.0.0.1:8000
 
@@ -36,8 +38,90 @@ trap 'echo; echo "Interrupted."; exit 130' INT TERM
 
 section() { printf '\n=== %s\n' "$*"; }
 
+# --- Server and drain helpers -------------------------------------------------------
+DRAIN_FILE="$RESULTS/$RESULTS_PREFIX-drain.txt"
+DRAIN_FAST_S=2           # a probe counts as fast if GET /v1/plots answers within this
+DRAIN_PROBE_TIMEOUT_S=120
+DRAIN_CAP_S=600          # not drained after this long: restart the server (once per run)
+
+now() { date +%s.%N; }
+seconds_since() { awk -v a="$1" -v b="$(now)" 'BEGIN { printf "%.1f", b - a }'; }
+
+start_server() {
+  # Same command every time; REGISTRY_DB_PATH (DB=large) is inherited from the environment.
+  setsid uv run uvicorn main:app --host 127.0.0.1 --port 8000 --log-level warning \
+    >> "$RESULTS/$RESULTS_PREFIX-server.log" 2>&1 &
+  SERVER_PID=$!
+  for _ in $(seq 1 60); do
+    if curl -fsS -o /dev/null "$BASE_URL/health" 2>/dev/null; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  echo "FAIL: /health did not answer within 30 s. See $RESULTS/$RESULTS_PREFIX-server.log" >&2
+  return 1
+}
+
+stop_server() {
+  # The server runs in its own process group: stop uv and uvicorn together.
+  kill -TERM -- "-$SERVER_PID" 2>/dev/null || true
+  wait "$SERVER_PID" 2>/dev/null || true
+  SERVER_PID=""
+  for _ in $(seq 1 60); do
+    ss -ltn | grep -q ':8000 ' || return 0
+    sleep 0.5
+  done
+  echo "FAIL: port 8000 still in use 30 s after stopping the server." >&2
+  return 1
+}
+
+# Before each run: wait until GET /v1/plots answers within DRAIN_FAST_S twice in a
+# row, so work left over from the previous run (requests the client gave up on keep
+# running on the server) cannot leak into the next one. After DRAIN_CAP_S, restart
+# the server once. One line per run goes to <prefix>-drain.txt.
+drain_wait() {
+  local name=$1 start phase_start code t fast=0 probes=0 restarted=no status=drained
+  start=$(now)
+  phase_start=$start
+  while :; do
+    read -r code t < <(curl -s -o /dev/null --max-time "$DRAIN_PROBE_TIMEOUT_S" \
+      -w '%{http_code} %{time_total}\n' "$BASE_URL/v1/plots" || true)
+    probes=$((probes + 1))
+    if [[ "$code" == "200" ]] && awk -v t="$t" -v l="$DRAIN_FAST_S" 'BEGIN { exit !(t < l) }'; then
+      fast=$((fast + 1))
+    else
+      fast=0
+    fi
+    [[ $fast -ge 2 ]] && break
+    if awk -v e="$(seconds_since "$phase_start")" -v c="$DRAIN_CAP_S" 'BEGIN { exit !(e >= c) }'; then
+      if [[ "$restarted" == "no" ]]; then
+        echo "Not drained after ${DRAIN_CAP_S} s: restarting the server (same command, same database)."
+        stop_server
+        start_server
+        restarted=yes
+        phase_start=$(now)
+        fast=0
+      else
+        status="NOT drained"
+        break
+      fi
+    fi
+  done
+  local drain_s
+  drain_s=$(seconds_since "$start")
+  printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$drain_s" "$probes" "$restarted" "$status" >> "$DRAIN_FILE"
+  echo "Drain before $name: ${drain_s} s, $probes probes, restart $restarted, $status."
+}
+
 # --- Pre-flight -------------------------------------------------------------------
 section "Pre-flight"
+case "$DB" in
+  seed) DB_FILE=registry.db ;;
+  large) DB_FILE="$RESULTS/$RESULTS_PREFIX-registry.db" ;;
+  *) echo "FAIL: DB must be seed or large, not '$DB'." >&2; exit 1 ;;
+esac
+DB_LABEL="$DB ($DB_FILE)"
+echo "OK: database $DB_LABEL."
 # Never overwrite an earlier session (official-*, paired-*, an earlier k6 session...).
 if compgen -G "$RESULTS/$RESULTS_PREFIX-*" >/dev/null; then
   echo "FAIL: $RESULTS/$RESULTS_PREFIX-* already exists. Choose another RESULTS_PREFIX." >&2
@@ -86,23 +170,17 @@ mkdir -p "$RESULTS"
 START_SECONDS=$SECONDS
 
 # --- Server -----------------------------------------------------------------------
-section "Seed and start the server"
-bash seed_registry.sh
-setsid uv run uvicorn main:app --host 127.0.0.1 --port 8000 --log-level warning \
-  > "$RESULTS/$RESULTS_PREFIX-server.log" 2>&1 &
-SERVER_PID=$!
-
-for _ in $(seq 1 60); do
-  if curl -fsS -o /dev/null "$BASE_URL/health" 2>/dev/null; then
-    break
-  fi
-  sleep 0.5
-done
-if ! curl -fsS -o /dev/null "$BASE_URL/health" 2>/dev/null; then
-  echo "FAIL: /health did not answer within 30 s. See $RESULTS/$RESULTS_PREFIX-server.log" >&2
-  exit 1
+section "Build the database and start the server"
+if [[ "$DB" == "large" ]]; then
+  # A separate copy under perf/results/; seed_registry.sh's registry.db is not touched.
+  uv run python perf/make_large_db.py --out "$DB_FILE" | tee "$RESULTS/$RESULTS_PREFIX-make-large-db.txt"
+  export REGISTRY_DB_PATH="$PWD/$DB_FILE"
+else
+  bash seed_registry.sh
 fi
-echo "Server is up (pid $SERVER_PID)."
+start_server
+printf 'run\tdrain_s\tprobes\trestarted\tstatus\n' > "$DRAIN_FILE"
+echo "Server is up (pid $SERVER_PID), database $DB_LABEL."
 
 # --- Monitors ---------------------------------------------------------------------
 section "Start monitors"
@@ -128,18 +206,20 @@ for run in "${RUNS[@]}"; do
     name="$RESULTS_PREFIX-k6-run$n"
   fi
   section "Run $name (warm-up ${WARMUP} s, duration ${DURATION} s)"
+  drain_wait "$name"
   # A failed or INVALID run is recorded, not fatal: the remaining runs still happen.
   set +e
   if [[ "$tool" == "ours" ]]; then
     uv run python perf/load_test.py --arrival constant --seed "$n" \
-      --warmup "$WARMUP" --duration "$DURATION" --out "$RESULTS/$name.json" \
+      --warmup "$WARMUP" --duration "$DURATION" --db-label "$DB_LABEL" \
+      --out "$RESULTS/$name.json" \
       | tee "$RESULTS/$name.txt"
   else
     # stdout: the per-endpoint summary from handleSummary; stderr (k6 log lines and
     # one "request_error ..." line per failed request) goes to <name>.log.
     k6 run --quiet --no-usage-report \
       -e BASE_URL="$BASE_URL" -e WARMUP="$WARMUP" -e DURATION="$DURATION" \
-      -e SUMMARY_OUT="$RESULTS/$name.json" -e K6_VERSION="$K6_VERSION" \
+      -e SUMMARY_OUT="$RESULTS/$name.json" -e K6_VERSION="$K6_VERSION" -e DB_LABEL="$DB_LABEL" \
       perf/k6_mix.js 2> "$RESULTS/$name.log" | tee "$RESULTS/$name.txt"
   fi
   code=${PIPESTATUS[0]}
@@ -152,6 +232,7 @@ done
 
 # --- Summary ----------------------------------------------------------------------
 section "Summary"
+echo "Database: $DB_LABEL"
 for i in "${!NAMES[@]}"; do
   python3 -I - "$RESULTS/${NAMES[$i]}.json" "${NAMES[$i]}" "${CODES[$i]}" <<'EOF'
 import json, re, sys
@@ -190,6 +271,8 @@ else:
           f"suspensions {suspensions}  {verdict}")
 EOF
 done
+echo "Drain before each run (GET /v1/plots within ${DRAIN_FAST_S} s twice in a row):"
+awk -F'\t' 'NR > 1 { printf "  %-32s %7s s  probes %3s  restart %-3s  %s\n", $1, $2, $3, $4, $5 }' "$DRAIN_FILE"
 
 section "Cross-check comparison"
 set +e
