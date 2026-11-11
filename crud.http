@@ -1,0 +1,80 @@
+# AgroPilot registry-service: the 10 CRUD endpoints, one example each
+# Run top to bottom. The file creates a farm and a plot, then deletes both,
+# so the database ends exactly as it started.
+
+@base = http://127.0.0.1:8000
+
+
+############################################################
+# FARMS · routers/farms.py
+############################################################
+
+### 1 · create_farm · POST /v1/farms · Create → 201
+# @name farm
+POST {{base}}/v1/farms
+Content-Type: application/json
+
+{ "name": "Interview farm" }
+
+### 2 · list_farms · GET /v1/farms · Read (list) → 200
+GET {{base}}/v1/farms
+
+### 3 · get_farm · GET /v1/farms/{farm_id} · Read (one) → 200
+GET {{base}}/v1/farms/{{farm.response.body.$.id}}
+
+### 4 · update_farm · PATCH /v1/farms/{farm_id} · Update → 200
+PATCH {{base}}/v1/farms/{{farm.response.body.$.id}}
+Content-Type: application/json
+
+{ "name": "Interview farm (renamed)" }
+
+
+############################################################
+# PLOTS · routers/plots.py
+############################################################
+
+### 6 · create_plot · POST /v1/plots · Create → 201
+# @name plot
+POST {{base}}/v1/plots
+Content-Type: application/json
+
+{
+  "farm_id": "{{farm.response.body.$.id}}",
+  "name": "Interview block",
+  "area_m2": 1000,
+  "crop_id": "tomato",
+  "planting_date": "2026-03-01",
+  "soil_id": "loam",
+  "row_spacing_m": 1.5,
+  "emitter_spacing_m": 0.4,
+  "emitter_id": "dripnet-pc-1.0",
+  "lat": 31.25,
+  "lon": 34.79
+}
+
+### 7 · list_plots · GET /v1/plots?farm_id= · Read (list) → 200
+GET {{base}}/v1/plots?farm_id={{farm.response.body.$.id}}
+
+### 8 · get_plot · GET /v1/plots/{plot_id} · Read (one) → 200
+GET {{base}}/v1/plots/{{plot.response.body.$.id}}
+
+### 9 · update_plot · PATCH /v1/plots/{plot_id} · Update → 200
+# Only area_m2 changes; every other field stays as it was
+PATCH {{base}}/v1/plots/{{plot.response.body.$.id}}
+Content-Type: application/json
+
+{ "area_m2": 1250 }
+
+### 10 · delete_plot · DELETE /v1/plots/{plot_id} · Delete → 204
+DELETE {{base}}/v1/plots/{{plot.response.body.$.id}}
+
+
+############################################################
+# Back to farms: delete it last, now that it has no plots
+############################################################
+
+### 5 · delete_farm · DELETE /v1/farms/{farm_id} · Delete → 204
+DELETE {{base}}/v1/farms/{{farm.response.body.$.id}}
+
+### ✓ Proof it's gone → 404 NOT_FOUND (problem+json)
+GET {{base}}/v1/farms/{{farm.response.body.$.id}}
