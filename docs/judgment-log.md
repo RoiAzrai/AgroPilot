@@ -464,3 +464,14 @@ and why.
 - **Why:** One role keeps setup to one command with no permission logic.
   A missing grant is fixed in the environment, not in the code, the same rule as
   entry 26.
+
+## 30. Unknown keys in `.env` stop the service at startup
+- **Agent suggested:** The task reviewer flagged that `Settings` rejects any key
+  it does not know, so an unrelated key in `.env` (for example `LOG_LEVEL`)
+  crashes startup, and suggested `extra="ignore"`.
+- **I decided:** Keep `Settings` strict (pydantic-settings' default). `.env.example`
+  says that unknown keys stop the service at startup.
+- **Why:** A typo such as `DB_BUSY_TIMEOUT_SECOND` must fail loudly. With
+  `extra="ignore"` it would be silently dropped and the service would run with
+  the default value, which is much harder to notice. A new setting is added as a
+  field in `config.py` anyway.
