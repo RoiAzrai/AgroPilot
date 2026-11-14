@@ -70,6 +70,17 @@ def engine_kwargs(settings: Settings) -> dict[str, Any]:
                 "check_same_thread": False,
             },
         }
+    if backend == "postgresql":
+        # Default QueuePool. pre_ping replaces connections the server dropped.
+        # lock_timeout is the PostgreSQL counterpart of SQLite's busy timeout.
+        return {
+            "pool_pre_ping": True,
+            "pool_timeout": settings.db_pool_timeout_seconds,
+            "connect_args": {
+                "connect_timeout": settings.db_connect_timeout_seconds,
+                "options": f"-c lock_timeout={round(settings.db_busy_timeout_seconds * 1000)}",
+            },
+        }
     raise ValueError(f"Unsupported database backend: {backend}")
 
 
