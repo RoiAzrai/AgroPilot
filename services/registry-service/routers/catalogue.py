@@ -21,6 +21,8 @@ def list_crops(conn: Db) -> list[Crop]:
 
 @router.get("/crops/{crop_id}", response_model=Crop)
 def get_crop(crop_id: str, conn: Db) -> Crop:
+    if "\x00" in crop_id:  # PostgreSQL cannot compare TEXT with NUL
+        raise not_found("Crop not found")
     row = conn.execute("SELECT id, name FROM crops WHERE id = ?", (crop_id,)).fetchone()
     if row is None:
         raise not_found("Crop not found")
@@ -37,6 +39,8 @@ def list_soils(conn: Db) -> list[Soil]:
 
 @router.get("/soils/{soil_id}", response_model=Soil)
 def get_soil(soil_id: str, conn: Db) -> Soil:
+    if "\x00" in soil_id:  # PostgreSQL cannot compare TEXT with NUL
+        raise not_found("Soil not found")
     row = conn.execute(
         "SELECT id, name, available_water_mm_per_m FROM soils WHERE id = ?", (soil_id,)
     ).fetchone()
@@ -53,6 +57,8 @@ def list_emitters(conn: Db) -> list[Emitter]:
 
 @router.get("/emitters/{emitter_id}", response_model=Emitter)
 def get_emitter(emitter_id: str, conn: Db) -> Emitter:
+    if "\x00" in emitter_id:  # PostgreSQL cannot compare TEXT with NUL
+        raise not_found("Emitter not found")
     row = conn.execute(
         "SELECT id, name, flow_lph FROM emitters WHERE id = ?", (emitter_id,)
     ).fetchone()

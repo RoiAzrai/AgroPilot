@@ -30,6 +30,8 @@ def check_references(conn: sqlite3.Connection, values: Mapping[str, Any]) -> Non
     for field, (table, detail) in _REFERENCES.items():
         if field not in values:
             continue
+        if "\x00" in values[field]:  # PostgreSQL cannot compare TEXT with NUL
+            raise validation(detail)
         row = conn.execute(f"SELECT 1 FROM {table} WHERE id = ?", (values[field],)).fetchone()
         if row is None:
             raise validation(detail)

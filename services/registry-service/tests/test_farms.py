@@ -122,3 +122,14 @@ def test_delete_farm_with_plots_is_409(client, db_file):
 def test_unknown_or_malformed_id_is_404(client, farm_id, method, body):
     response = client.request(method, f"/v1/farms/{farm_id}", json=body)
     assert_problem(response, 404, "NOT_FOUND")
+
+
+@pytest.mark.parametrize(
+    "method, path",
+    [("POST", "/v1/farms"), ("PATCH", f"/v1/farms/{DEMO_COOPERATIVE}")],
+)
+def test_name_with_nul_is_422(client, method, path):
+    before = client.get("/v1/farms").json()
+    response = client.request(method, path, json={"name": "a\x00b"})
+    assert "body.name" in assert_problem(response, 422, "VALIDATION")["detail"]
+    assert client.get("/v1/farms").json() == before
