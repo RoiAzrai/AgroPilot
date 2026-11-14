@@ -5,6 +5,7 @@
       "name": "registry-service",
       "type": "debugpy",
       "request": "launch",
+      "python": "${workspaceFolder}/services/registry-service/.venv/bin/python",
       "module": "uvicorn",
       "args": [
         "main:app",

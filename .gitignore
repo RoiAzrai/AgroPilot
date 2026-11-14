@@ -25,3 +25,9 @@ htmlcov/
 .idea/
 .vscode/*
 !.vscode/launch.json
+
+# Local databases
+registry.db
+
+# Load-test output
+services/registry-service/perf/results/
