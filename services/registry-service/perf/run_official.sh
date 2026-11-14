@@ -47,7 +47,8 @@ now() { date +%s.%N; }
 seconds_since() { awk -v a="$1" -v b="$(now)" 'BEGIN { printf "%.1f", b - a }'; }
 
 start_server() {
-  # Same command every time; REGISTRY_DB_PATH (DB=large) is inherited from the environment.
+  # Same command every time; DATABASE_URL (set below for DB=large and DB=seed) is inherited
+  # from the environment.
   setsid uv run uvicorn main:app --host 127.0.0.1 --port 8000 --log-level warning \
     >> "$RESULTS/$RESULTS_PREFIX-server.log" 2>&1 &
   SERVER_PID=$!
@@ -167,9 +168,10 @@ section "Build the database and start the server"
 if [[ "$DB" == "large" ]]; then
   # A separate copy under perf/results/; seed_registry.sh's registry.db is not touched.
   uv run python perf/make_large_db.py --out "$DB_FILE" | tee "$RESULTS/$RESULTS_PREFIX-make-large-db.txt"
-  export REGISTRY_DB_PATH="$PWD/$DB_FILE"
+  export DATABASE_URL="sqlite:///file:$PWD/$DB_FILE?mode=rw&uri=true"
 else
   bash seed_registry.sh
+  export DATABASE_URL="sqlite:///file:$PWD/registry.db?mode=rw&uri=true"
 fi
 start_server
 printf 'run\tdrain_s\tprobes\trestarted\tstatus\n' > "$DRAIN_FILE"

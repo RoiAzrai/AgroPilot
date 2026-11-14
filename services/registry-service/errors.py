@@ -6,15 +6,15 @@ and, as a last resort, any unexpected exception.
 """
 
 import logging
-import sqlite3
 from http import HTTPStatus
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from db import is_unavailable
+from db import driver_code, is_unavailable, unique_violation_key
 
 logger = logging.getLogger(__name__)
 
@@ -86,25 +86,24 @@ async def _http_error(request: Request, exc: StarletteHTTPException) -> JSONResp
     return problem(exc.status_code, code, detail, headers=exc.headers)
 
 
-async def _integrity_error(request: Request, exc: sqlite3.IntegrityError) -> JSONResponse:
+async def _integrity_error(request: Request, exc: IntegrityError) -> JSONResponse:
     # Only UNIQUE is mapped here. A FOREIGN KEY failure means different things per
     # endpoint (422 on a plot write, 409 on a farm delete), so endpoints handle it.
-    message = str(exc)
-    prefix = "UNIQUE constraint failed: "
-    if not message.startswith(prefix):
+    key = unique_violation_key(exc.orig)
+    if key is None:
         raise exc
-    detail = _UNIQUE_DETAILS.get(message.removeprefix(prefix), "Record already exists")
+    detail = _UNIQUE_DETAILS.get(key, "Record already exists")
     return problem(409, "CONFLICT", detail)
 
 
-async def _database_error(request: Request, exc: sqlite3.Error) -> JSONResponse:
-    # Classified by SQLite error code: a missing table is also an OperationalError,
+async def _database_error(request: Request, exc: DBAPIError) -> JSONResponse:
+    # Classified by the driver's error code: a missing table is also an OperationalError,
     # but it is a bug, so anything not environmental goes on to the 500 handler.
-    if not is_unavailable(exc):
+    if not is_unavailable(exc.orig):
         raise exc
     logger.warning(
         "Database unavailable on %s %s: %s %s",
-        request.method, request.url.path, exc.sqlite_errorname, exc,
+        request.method, request.url.path, driver_code(exc.orig), exc.orig,
     )
     return problem(
         503, "UNAVAILABLE", "Database unavailable",
@@ -122,6 +121,6 @@ def register_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(AppError, _app_error)
     app.add_exception_handler(RequestValidationError, _request_validation_error)
     app.add_exception_handler(StarletteHTTPException, _http_error)
-    app.add_exception_handler(sqlite3.IntegrityError, _integrity_error)
-    app.add_exception_handler(sqlite3.Error, _database_error)
+    app.add_exception_handler(IntegrityError, _integrity_error)
+    app.add_exception_handler(DBAPIError, _database_error)
     app.add_exception_handler(Exception, _unexpected_error)

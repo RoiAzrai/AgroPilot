@@ -100,6 +100,21 @@ def test_create_with_spec_body(client):
     assert client.get(f"/v1/plots/{body['id']}").json() == body
 
 
+def test_values_round_trip_exactly(client):
+    sent = {
+        **SPEC_BODY,
+        "name": "חלקה צפונית 🌱",
+        "lat": 31.2345678,
+        "lon": 34.7818064,
+        "area_m2": 1000.1,
+    }
+    created = client.post("/v1/plots", json=sent)
+    assert created.status_code == 201
+    stored = client.get(f"/v1/plots/{created.json()['id']}").json()
+    for field in ("name", "lat", "lon", "area_m2"):
+        assert stored[field] == sent[field]
+
+
 def test_create_normalizes_farm_id_and_name(client):
     body = {**SPEC_BODY, "farm_id": DEMO_COOPERATIVE.upper(), "name": "  South block  "}
     created = client.post("/v1/plots", json=body).json()
