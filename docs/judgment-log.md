@@ -399,3 +399,68 @@ and why.
   meets NFR-1.1 at 500 times the spec's data volume (worst p95 80.1 ms), confirmed
   independently by k6, and collapses at 10,000 plots. Recommendations for the PR,
   not to implement here: pagination for list endpoints, and more than one worker.
+
+## 25. List order on PostgreSQL: a `rowid` identity column
+- **Agent suggested:** Six queries return lists in insertion order with
+  `ORDER BY rowid`, and PostgreSQL has no `rowid`. Give each PostgreSQL table a
+  `rowid BIGINT GENERATED ALWAYS AS IDENTITY` column, so the same SQL runs on
+  both databases. Alternative: `ORDER BY id`.
+- **I decided:** Accepted the `rowid` column. The schema-comparison test allows
+  `rowid` as the only difference between the PostgreSQL schema and
+  `seed_registry.sh`, and fails on anything else.
+- **Why:** Keeping list order exactly as today matters more than a perfectly
+  identical schema. `ORDER BY id` would reorder every list, because farm and
+  plot ids are random UUIDs. The column is never returned, because every
+  `SELECT` names its columns.
+
+## 26. Missing PostgreSQL database and authorization errors are 503
+- **Agent suggested:** Classify PostgreSQL errors by SQLSTATE: no connection,
+  classes 08, 53, 57, 58, and 55P03, 25006, XX001, XX002 are 503. Asked whether
+  a missing database (3D000) and authorization errors (class 28) should be 503
+  or 500.
+- **I decided:** 503 with `Retry-After`, and a warning log that includes the
+  SQLSTATE.
+- **Why:** Same rule as P1 (entry 14), where a missing SQLite file is 503: the
+  fix is in the environment (create the database, fix the password or grants),
+  not in the code. The log gives operations the exact cause.
+
+## 27. NUL characters in names are rejected with 422
+- **Agent suggested:** Flagged that the `Name` type accepts any non-empty string,
+  including the NUL character (`\x00`). SQLite stores it, but PostgreSQL `TEXT`
+  cannot, so the same request would be 201 on SQLite and 500 on PostgreSQL.
+- **I decided:** Reject NUL in name fields (farm and plot names, create and
+  PATCH) with `422 VALIDATION` on both databases, with a test. This is the one
+  deliberate behavior change in the PostgreSQL move, and the PR mentions it.
+- **Why:** The service must behave the same on both databases, and a name with
+  a NUL character is not a real name. A 500 would report a client mistake as a
+  server bug. Rejecting it on both databases keeps them identical, at the cost
+  of one change from P1, where SQLite accepted it.
+
+## 28. Lock waits, deadlocks and a full connection pool on PostgreSQL are 503
+- **Agent suggested:** PostgreSQL waits for a lock forever by default, so a
+  request blocked by a lock would never answer, while in P1 a locked SQLite file
+  gives 503 after 5 s. Set PostgreSQL's `lock_timeout` from the same
+  `DB_BUSY_TIMEOUT_SECONDS`. Also, when every pooled connection is busy,
+  SQLAlchemy raises `TimeoutError` after 30 s (a hardcoded default), which would
+  become a 500.
+- **I decided:** `lock_timeout` = `DB_BUSY_TIMEOUT_SECONDS` (5 s). A full pool
+  returns 503 with `Retry-After`, after `DB_POOL_TIMEOUT_SECONDS` (5 s), both
+  set in `.env`. No general `statement_timeout`. A deadlock (SQLSTATE `40P01`)
+  is also 503: it is a lock conflict, like `SQLITE_LOCKED` in P1, and a retry
+  fixes it.
+- **Why:** Both are the environment being busy, not a bug, so the P1 rule
+  (entry 14) gives 503: waiting helps. A request that hangs without limit gives
+  the client no answer at all, and timeouts must come from configuration, not
+  from code or library defaults.
+
+## 29. One PostgreSQL role for setup and service; insufficient privilege is 503
+- **Agent suggested:** If `seed_db.py` runs as one role and the service as
+  another, every request fails with SQLSTATE `42501` (insufficient privilege),
+  which the classification table mapped to 500. Use one role that owns the
+  tables for both, and treat `42501` like the authorization errors of class 28.
+- **I decided:** One role owns the tables and is used by both `seed_db.py` and
+  the service; `seed_db.py` runs no `GRANT`, and the setup docs say so. `42501`
+  returns 503 with a warning log that includes the SQLSTATE.
+- **Why:** One role keeps setup to one command with no permission logic.
+  A missing grant is fixed in the environment, not in the code, the same rule as
+  entry 26.
