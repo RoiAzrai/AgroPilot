@@ -46,8 +46,9 @@ def is_unavailable(exc: BaseException) -> bool:
     if isinstance(exc, psycopg.Error):
         sqlstate = exc.sqlstate
         if sqlstate is None:
-            # No SQLSTATE: no connection at all is an outage; a client-side error is a bug.
-            return isinstance(exc, (psycopg.OperationalError, psycopg.InterfaceError))
+            # No SQLSTATE: no connection at all (OperationalError) is an outage; any other
+            # client-side error, InterfaceError included (e.g. a closed cursor), is a bug.
+            return isinstance(exc, psycopg.OperationalError)
         return sqlstate[:2] in _UNAVAILABLE_SQLSTATE_CLASSES or sqlstate in _UNAVAILABLE_SQLSTATES
     return False
 

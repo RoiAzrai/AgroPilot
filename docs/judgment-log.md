@@ -475,3 +475,18 @@ and why.
   `extra="ignore"` it would be silently dropped and the service would run with
   the default value, which is much harder to notice. A new setting is added as a
   field in `config.py` anyway.
+
+## 31. "No connection" on PostgreSQL means `OperationalError` only
+- **Agent suggested:** The task reviewer noted that the approved table mapped a
+  psycopg `InterfaceError` with no SQLSTATE to 503, like `OperationalError`. But
+  psycopg also raises `InterfaceError` for client-side misuse, such as using a
+  closed cursor.
+- **I decided:** Only `psycopg.OperationalError` with no SQLSTATE ("no
+  connection at all": server down, connection refused, DNS, connect timeout) is
+  503. `InterfaceError` with no SQLSTATE is 500, like the other client-side
+  errors.
+- **Why:** Misusing the driver is a bug in our code, and retrying will never fix
+  it. Returning 503 would hide it as an outage, the same rule as entry 14. The
+  smoke test showed that a real refused connection is an `OperationalError`
+  (`SQLSTATE=None connection failed: ... Connection refused`), so outages are
+  still 503.

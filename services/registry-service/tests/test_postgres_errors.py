@@ -52,7 +52,7 @@ def integrity(orig: psycopg.Error) -> sqlalchemy.exc.IntegrityError:
     [
         # No connection at all.
         (None, psycopg.OperationalError, True),
-        (None, psycopg.InterfaceError, True),
+        (None, psycopg.InterfaceError, False),
         # The environment: 503.
         ("08006", None, True),
         ("08001", None, True),

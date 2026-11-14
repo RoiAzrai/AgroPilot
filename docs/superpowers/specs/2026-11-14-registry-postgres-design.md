@@ -233,7 +233,7 @@ driver exception:
 
 | Situation | SQLSTATE | Result |
 | --- | --- | --- |
-| No connection at all (server down, refused, DNS, connect timeout): `psycopg.OperationalError` or `psycopg.InterfaceError` with no SQLSTATE | `None` | 503 |
+| No connection at all (server down, refused, DNS, connect timeout): `psycopg.OperationalError` with no SQLSTATE | `None` | 503 |
 | Connection exception | class `08` | 503 |
 | Insufficient resources (disk full, out of memory, too many connections) | class `53` | 503 |
 | Operator intervention (shutdown, restart, cannot connect now) | class `57` | 503 |
@@ -245,7 +245,7 @@ driver exception:
 | Database does not exist | `3D000` | 503 |
 | Invalid authorization (bad password, no permission to connect) | class `28` | 503 |
 | Insufficient privilege (no `CONNECT` on the database, no grant on a table) | `42501` | 503 |
-| Any other error with no SQLSTATE (client-side errors such as `DataError` for a NUL byte, `ProgrammingError`) | `None` | 500 |
+| Any other error with no SQLSTATE (client-side errors such as `DataError` for a NUL byte, `ProgrammingError`, `InterfaceError`) | `None` | 500 |
 | Anything else (e.g. `42P01` undefined table, `42601` syntax, `42703` undefined column) | | 500 |
 
 - `3D000`, class `28` and `42501` are 503 for the same reason as P1's missing
@@ -258,6 +258,9 @@ driver exception:
 - The `None` row is narrowed to "no connection at all" *(builder's call)*:
   psycopg also raises errors with no SQLSTATE on the client side (for example
   `DataError` for a NUL byte), and those are bugs, not outages.
+  Narrowed further to `psycopg.OperationalError` only (owner's decision,
+  judgment log 31): psycopg also raises `InterfaceError` for client-side
+  misuse such as a closed cursor, which is a bug.
 - Any other driver error is re-raised to the 500 handler, unchanged from P1.
 - **Connect failures:** `engine.connect()` in `get_db` raises
   `sqlalchemy.exc.OperationalError` wrapping the driver error, so it goes
