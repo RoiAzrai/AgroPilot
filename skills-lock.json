@@ -12,12 +12,6 @@
       "sourceType": "github",
       "skillPath": "skills/engineering/research/SKILL.md",
       "computedHash": "7662666af51f8b1672ed7d88360d4b82656da21bb7b11c49e956eeb3036b85d5"
-    },
-    "skill-creator": {
-      "source": "anthropics/skills",
-      "sourceType": "github",
-      "skillPath": "skills/skill-creator/SKILL.md",
-      "computedHash": "2d7f889e6ae93c6c27d699856942c336b5b8644537496987d5571043d059b1dc"
     }
   }
 }
