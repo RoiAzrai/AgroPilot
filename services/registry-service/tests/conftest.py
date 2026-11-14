@@ -46,3 +46,7 @@ def assert_problem(response, status: int, code: str) -> dict:
     assert body["code"] == code
     assert body["detail"]
     return body
+
+
+def sqlite_url(path: Path) -> str:
+    return f"sqlite:///file:{path}?mode=rw&uri=true"
