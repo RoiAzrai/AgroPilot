@@ -12,6 +12,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import DBAPIError, IntegrityError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from db import driver_code, is_unavailable, unique_violation_key
@@ -111,6 +112,15 @@ async def _database_error(request: Request, exc: DBAPIError) -> JSONResponse:
     )
 
 
+async def _pool_exhausted(request: Request, exc: PoolTimeoutError) -> JSONResponse:
+    # Every pooled connection stayed busy for the whole pool timeout: wait and retry.
+    logger.warning("Database connection pool exhausted on %s %s", request.method, request.url.path)
+    return problem(
+        503, "UNAVAILABLE", "Database unavailable",
+        headers={"Retry-After": str(RETRY_AFTER_SECONDS)},
+    )
+
+
 async def _unexpected_error(request: Request, exc: Exception) -> JSONResponse:
     # The client gets a generic body; the details stay in the server log.
     logger.exception("Unhandled error on %s %s", request.method, request.url.path, exc_info=exc)
@@ -123,4 +133,5 @@ def register_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(StarletteHTTPException, _http_error)
     app.add_exception_handler(IntegrityError, _integrity_error)
     app.add_exception_handler(DBAPIError, _database_error)
+    app.add_exception_handler(PoolTimeoutError, _pool_exhausted)
     app.add_exception_handler(Exception, _unexpected_error)
