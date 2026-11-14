@@ -4,6 +4,7 @@
 # the session comparison. Run it from a plain terminal, VS Code closed:
 #   cd services/registry-service && bash perf/run_official.sh
 # Dry run: WARMUP=2 DURATION=10 ASSUME_YES=1 RESULTS_PREFIX=dry bash perf/run_official.sh
+# PostgreSQL (registry_perf only): DB=postgres PERF_DATABASE_URL=postgresql+psycopg://.../registry_perf RESULTS_PREFIX=pg bash perf/run_official.sh
 # Scale experiment (10,000 plots): DB=large RESULTS_PREFIX=large bash perf/run_official.sh
 
 set -euo pipefail
@@ -14,7 +15,7 @@ WARMUP="${WARMUP:-20}"
 DURATION="${DURATION:-300}"
 RESULTS_PREFIX="${RESULTS_PREFIX:-paired}"
 ASSUME_YES="${ASSUME_YES:-0}"
-DB="${DB:-seed}"  # seed: seed_registry.sh into registry.db; large: perf/make_large_db.py (10,000 plots)
+DB="${DB:-seed}"  # seed: seed_registry.sh into registry.db; large: perf/make_large_db.py (10,000 plots); postgres: registry_perf via PERF_DATABASE_URL
 RESULTS=perf/results
 BASE_URL=http://127.0.0.1:8000
 
@@ -47,7 +48,7 @@ now() { date +%s.%N; }
 seconds_since() { awk -v a="$1" -v b="$(now)" 'BEGIN { printf "%.1f", b - a }'; }
 
 start_server() {
-  # Same command every time; DATABASE_URL (set below for DB=large and DB=seed) is inherited
+  # Same command every time; DATABASE_URL (set below for every DB mode) is inherited
   # from the environment.
   setsid uv run uvicorn main:app --host 127.0.0.1 --port 8000 --log-level warning \
     >> "$RESULTS/$RESULTS_PREFIX-server.log" 2>&1 &
@@ -118,9 +119,24 @@ section "Pre-flight"
 case "$DB" in
   seed) DB_FILE=registry.db ;;
   large) DB_FILE="$RESULTS/$RESULTS_PREFIX-registry.db" ;;
-  *) echo "FAIL: DB must be seed or large, not '$DB'." >&2; exit 1 ;;
+  postgres)
+    # Only the registry_perf database; never registry (production).
+    PERF_DB_NAME=""
+    if [[ -n "${PERF_DATABASE_URL:-}" ]]; then
+      PERF_DB_NAME=$(uv run python -c 'import sys; from sqlalchemy.engine import make_url; print(make_url(sys.argv[1]).database)' "$PERF_DATABASE_URL" 2>/dev/null || true)
+    fi
+    if [[ "$PERF_DB_NAME" != "registry_perf" ]]; then
+      echo "FAIL: DB=postgres needs PERF_DATABASE_URL pointing at the registry_perf database" >&2
+      exit 1
+    fi
+    ;;
+  *) echo "FAIL: DB must be seed, large or postgres, not '$DB'." >&2; exit 1 ;;
 esac
-DB_LABEL="$DB ($DB_FILE)"
+if [[ "$DB" == "postgres" ]]; then
+  DB_LABEL="postgres (registry_perf)"
+else
+  DB_LABEL="$DB ($DB_FILE)"
+fi
 echo "OK: database $DB_LABEL."
 # Never overwrite an earlier session (for example the official-* files).
 if compgen -G "$RESULTS/$RESULTS_PREFIX-*" >/dev/null; then
@@ -169,6 +185,10 @@ if [[ "$DB" == "large" ]]; then
   # A separate copy under perf/results/; seed_registry.sh's registry.db is not touched.
   uv run python perf/make_large_db.py --out "$DB_FILE" | tee "$RESULTS/$RESULTS_PREFIX-make-large-db.txt"
   export DATABASE_URL="sqlite:///file:$PWD/$DB_FILE?mode=rw&uri=true"
+elif [[ "$DB" == "postgres" ]]; then
+  # Reset and seed registry_perf (checked in the pre-flight); the server inherits DATABASE_URL.
+  export DATABASE_URL="$PERF_DATABASE_URL"
+  uv run python seed_db.py --reset | tee "$RESULTS/$RESULTS_PREFIX-seed-db.txt"
 else
   bash seed_registry.sh
   export DATABASE_URL="sqlite:///file:$PWD/registry.db?mode=rw&uri=true"

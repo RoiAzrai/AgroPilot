@@ -574,7 +574,7 @@ not agronomic fact:
 default 2,000-plot database with `make_large_db.py` into `perf/results/<prefix>-registry.db` before
 starting the server, saves the generator's output to
 `perf/results/<prefix>-make-large-db.txt`, and starts the server with
-`REGISTRY_DB_PATH` pointing to that file. Everything else is unchanged. Every
+`DATABASE_URL` (a `sqlite:///file:...` URL) pointing to that file. Everything else is unchanged. Every
 report records the database in its metadata (`db` and `db_rows`, in our reports
 and in the k6 reports).
 
@@ -655,3 +655,27 @@ This is the queueing "hockey stick": near full utilization, small bursts build a
 queue that does not clear. Findings for the PR, not implemented here: pagination
 for the list endpoints, and more than one worker. The harnesses now wait for the
 server to drain before each run, and id discovery has its own, longer timeout.
+
+## PostgreSQL (NFR-2.2)
+
+Both harnesses take `DB=postgres` to measure the service on PostgreSQL. It runs
+only against the separate database `registry_perf`, never against `registry`.
+The owner creates `registry_perf` first (see the PostgreSQL section of the
+service README).
+
+Set `PERF_DATABASE_URL` to the `registry_perf` URL. The pre-flight reads the
+database name from the URL and refuses to start (exit 1, `FAIL: DB=postgres
+needs PERF_DATABASE_URL pointing at the registry_perf database`) unless it is
+exactly `registry_perf`. It then exports `DATABASE_URL` from it, resets and
+seeds the database with `uv run python seed_db.py --reset` (output saved to
+`perf/results/<prefix>-seed-db.txt`), and starts the server as usual. The
+results metadata records the database as `postgres (registry_perf)`.
+
+```bash
+cd services/registry-service
+DB=postgres PERF_DATABASE_URL='postgresql+psycopg://USER:PASSWORD@HOST/registry_perf' RESULTS_PREFIX=pg-paired bash perf/run_official.sh
+DB=postgres PERF_DATABASE_URL='postgresql+psycopg://USER:PASSWORD@HOST/registry_perf' RESULTS_PREFIX=pg-k6 bash perf/run_k6_crosscheck.sh
+```
+
+The pass criterion is as NFR-1.1: p95 <= 100 ms on every list and by-id
+endpoint, from the three Poisson runs.
