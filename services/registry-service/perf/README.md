@@ -681,3 +681,27 @@ The password comes from `~/.pgpass` (libpq), not the command line, so it does no
 
 The pass criterion is as NFR-1.1: p95 <= 100 ms on every list and by-id
 endpoint, from the three Poisson runs.
+
+### Results (NFR-2.2 on PostgreSQL)
+
+Session `pg-paired` (Poisson/constant, seeds 1-3) against `registry_perf`,
+commit `fdca374`, 2026-11-14. **NFR-2.2: PASS.** All 6 runs PASS, 0 errors in
+17,870 requests, 0 VM suspensions, generator lag p99 <= 2.6 ms;
+`compare_runs.py` exit 0.
+
+Next to it, the official P1 result on SQLite (session `paired2`, commit
+`bf9da14`, 2026-11-07), both on the 15-row seed database:
+
+| | SQLite (P1, `paired2`) | PostgreSQL (`pg-paired`) |
+| --- | ---: | ---: |
+| Worst p95 | 19.8 ms (`plots_by_farm`, Poisson seed 1) | 15.6 ms (`soils_list`, Poisson seed 2) |
+| Overall Poisson p95, seeds 1 / 2 / 3 | 18.2 / 17.8 / 17.5 ms | 13.7 / 14.3 / 13.8 ms |
+| Poisson minus constant, overall p95 | +1.2 / +1.0 / +0.8 ms | +1.4 / +2.3 / +1.4 ms |
+| Pairs where Poisson is higher, CIs not overlapping | 3 of 3 | 3 of 3 |
+
+The absolute numbers come from different days, different commits and a
+different machine state, so they are **not comparable**: do not read the
+difference as "PostgreSQL is faster". Each session only shows that its own
+database meets the 100 ms limit with a wide margin. Within each session, the
+paired comparison is valid: Poisson arrivals give a slightly higher p95 than
+evenly spaced ones on both databases, as queueing theory predicts.
