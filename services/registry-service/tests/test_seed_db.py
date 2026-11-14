@@ -159,3 +159,39 @@ def test_describe_target_never_shows_password():
         assert part in text
     for part in ("p@ss", "p%40ss", "w0rd"):
         assert part not in text
+
+
+def test_database_error_is_one_line_without_password(tmp_path, monkeypatch, capsys):
+    import psycopg
+    import sqlalchemy.exc
+
+    monkeypatch.setenv(
+        "DATABASE_URL", "postgresql+psycopg://alice:s3cret@db.example:5432/registry_perf"
+    )
+    monkeypatch.setattr(config, "ENV_FILE", tmp_path / "missing.env")
+
+    def fail(engine, *, reset):
+        raise sqlalchemy.exc.OperationalError(
+            "SELECT 1", {}, psycopg.OperationalError('password authentication failed for user "alice"')
+        )
+
+    monkeypatch.setattr(seed_db, "create_and_seed", fail)
+    assert seed_db.main([]) == 1
+    captured = capsys.readouterr()
+    lines = [line for line in captured.err.splitlines() if line.strip()]
+    assert len(lines) == 1
+    assert "registry_perf" in lines[0]
+    assert "password authentication failed" in lines[0]
+    assert "s3cret" not in captured.err + captured.out
+    assert "Traceback" not in captured.err + captured.out
+
+
+def test_unopenable_sqlite_file_is_one_line(tmp_path, monkeypatch, capsys):
+    path = tmp_path / "no-such-dir" / "x.db"
+    monkeypatch.setenv("DATABASE_URL", sqlite_url(path))
+    monkeypatch.setattr(config, "ENV_FILE", tmp_path / "missing.env")
+    assert seed_db.main([]) == 1
+    lines = [line for line in capsys.readouterr().err.splitlines() if line.strip()]
+    assert len(lines) == 1
+    assert lines[0].startswith("Cannot seed sqlite file")
+    assert not path.exists()

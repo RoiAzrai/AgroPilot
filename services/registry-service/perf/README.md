@@ -10,7 +10,7 @@ From `services/registry-service`:
 
 ```bash
 bash seed_registry.sh                                  # known data
-uv run uvicorn main:app --host 127.0.0.1 --port 8000   # one worker, no --reload, no debugger
+DATABASE_URL="sqlite:///file:registry.db?mode=rw&uri=true" uv run uvicorn main:app --host 127.0.0.1 --port 8000   # one worker, no --reload, no debugger
 ```
 
 In a second terminal:
@@ -673,9 +673,11 @@ results metadata records the database as `postgres (registry_perf)`.
 
 ```bash
 cd services/registry-service
-DB=postgres PERF_DATABASE_URL='postgresql+psycopg://USER:PASSWORD@HOST/registry_perf' RESULTS_PREFIX=pg-paired bash perf/run_official.sh
-DB=postgres PERF_DATABASE_URL='postgresql+psycopg://USER:PASSWORD@HOST/registry_perf' RESULTS_PREFIX=pg-k6 bash perf/run_k6_crosscheck.sh
+DB=postgres PERF_DATABASE_URL='postgresql+psycopg://USER@HOST:5432/registry_perf' RESULTS_PREFIX=pg-paired bash perf/run_official.sh
+DB=postgres PERF_DATABASE_URL='postgresql+psycopg://USER@HOST:5432/registry_perf' RESULTS_PREFIX=pg-k6 bash perf/run_k6_crosscheck.sh
 ```
+
+The password comes from `~/.pgpass` (libpq), not the command line, so it does not land in shell history.
 
 The pass criterion is as NFR-1.1: p95 <= 100 ms on every list and by-id
 endpoint, from the three Poisson runs.

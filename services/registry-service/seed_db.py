@@ -26,6 +26,7 @@ from sqlalchemy import (
     inspect,
 )
 from sqlalchemy.engine import URL, make_url
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.types import REAL
 
 from config import get_settings
@@ -139,7 +140,8 @@ def build_metadata(dialect_name: str) -> MetaData:
 
 
 def create_and_seed(engine: Engine, *, reset: bool) -> None:
-    existing = [t for t in TABLES if t in inspect(engine).get_table_names()]
+    names = inspect(engine).get_table_names()
+    existing = [t for t in TABLES if t in names]
     if existing and not reset:
         raise TablesExistError(f"Tables already exist: {', '.join(existing)}")
     metadata = build_metadata(engine.dialect.name)
@@ -176,15 +178,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reset", action="store_true", help="drop and rebuild the tables")
     args = parser.parse_args(argv)
 
-    database_url = get_settings().database_url
+    settings = get_settings()
+    database_url = settings.database_url
     target = describe_target(make_url(database_url))
     if args.reset:
         print(f"Resetting {target}")
-    engine = create_engine(seed_url(database_url))
+    url = seed_url(database_url)
+    if make_url(url).get_backend_name() == "postgresql":
+        engine = create_engine(
+            url, connect_args={"connect_timeout": settings.db_connect_timeout_seconds}
+        )
+    else:
+        engine = create_engine(url)
     try:
         create_and_seed(engine, reset=args.reset)
     except TablesExistError as exc:
         print(f"{exc}; use --reset to rebuild", file=sys.stderr)
+        return 1
+    except DBAPIError as exc:
+        print(f"Cannot seed {target}: {' '.join(str(exc.orig).split())}", file=sys.stderr)
         return 1
     finally:
         engine.dispose()

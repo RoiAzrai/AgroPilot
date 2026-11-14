@@ -124,7 +124,7 @@ case "$DB" in
     # Only the registry_perf database; never registry (production).
     PERF_DB_NAME=""
     if [[ -n "${PERF_DATABASE_URL:-}" ]]; then
-      PERF_DB_NAME=$(uv run python -c 'import sys; from sqlalchemy.engine import make_url; print(make_url(sys.argv[1]).database)' "$PERF_DATABASE_URL" 2>/dev/null || true)
+      PERF_DB_NAME=$(uv run python -c 'import sys; from sqlalchemy.engine import make_url; u = make_url(sys.argv[1]); print(u.query.get("dbname", u.database))' "$PERF_DATABASE_URL" 2>/dev/null || true)
     fi
     if [[ "$PERF_DB_NAME" != "registry_perf" ]]; then
       echo "FAIL: DB=postgres needs PERF_DATABASE_URL pointing at the registry_perf database" >&2
