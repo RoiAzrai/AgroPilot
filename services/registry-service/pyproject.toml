@@ -5,6 +5,9 @@ description = "AgroPilot registry service."
 requires-python = ">=3.12"
 dependencies = [
     "fastapi~=0.115",
+    "psycopg[binary]~=3.2",
+    "pydantic-settings~=2.6",
+    "sqlalchemy~=2.0",
     "uvicorn~=0.32",
 ]
 
