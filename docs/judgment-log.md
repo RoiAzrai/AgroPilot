@@ -544,3 +544,27 @@ and why.
 - **Why:** A cell's content must not depend on request order, and "today" must
   stay right across DST changes, because serving yesterday as today is one of
   the errors this service exists to prevent.
+
+## 36. weather-service: Retry-After right after a failed refresh is the pause length
+- **Agent suggested:** The first implementation gave the request whose own
+  refresh had just failed `Retry-After: RETRY_AFTER_SECONDS` (5), and only later
+  requests during the pause got the seconds left in it, because two earlier
+  tests (written before the pause existed) expected 5.
+- **I decided:** That request gets the seconds left in the pause, which right
+  after the failure is the full `FAILURE_PAUSE_SECONDS` (60). The two tests
+  change from 5 to 60. A waiter that times out at the very start of a refresh,
+  in the same moment, before the pause is set, may still get 5: accepted.
+- **Why:** Once a refresh has failed, the pause has started and nothing will
+  change for 60 seconds. "Retry in 5" would be wrong: a client that retried
+  after 5 seconds would only get another 503 without a provider call.
+
+## 37. weather-service: a bug in our code never starts the pause
+- **Agent suggested:** The task reviewer found that an unexpected exception (a
+  bug, not a provider failure) also started the 60-second pause, so for a minute
+  the bug was hidden behind stale answers or 503s.
+- **I decided:** The pause starts only when all provider attempts failed or the
+  refresh deadline ran out. Any other exception propagates and stays a 500 on
+  every request; the next request tries again. A test covers it.
+- **Why:** Same rule as the registry (entry 14): a bug must not be hidden as an
+  outage. Retrying cannot fix it, and a 503 would invite retries and hide the
+  real cause.
