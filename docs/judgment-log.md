@@ -490,3 +490,57 @@ and why.
   smoke test showed that a real refused connection is an `OperationalError`
   (`SQLSTATE=None connection failed: ... Connection refused`), so outages are
   still 503.
+
+## 32. weather-service: a forecast older than 24 h is never served
+- **Agent suggested:** The spec asks the service to decide how old a forecast
+  can be before it stops serving it even as stale.
+- **I decided:** 24 hours (`FORECAST_MAX_STALE_SECONDS`). Older than that, the
+  service answers 503 `UNAVAILABLE`, never the old forecast. The service asks
+  the provider for 8 days, so a forecast up to 24 h old still has 7 full days
+  after dropping the day that has passed.
+- **Why:** Irrigation decisions are daily. After a day, the forecast may miss a
+  change such as new rain, and a plan built on it could water a field that
+  rain already watered, or skip one that needs water.
+
+## 33. weather-service: a pause after a failed refresh (deviation from FR-2.6)
+- **Agent suggested:** Per the letter of FR-2.6, every request after the 3
+  fresh hours retries the provider twice before serving stale. While the
+  provider is down, every request then waits for three attempts, and the load
+  on the provider grows exactly when it is in trouble. Suggested a pause.
+- **I decided:** After a failed refresh of a cell, for `FAILURE_PAUSE_SECONDS`
+  (default 60), requests for that cell get the stale forecast at once, or a 503
+  if there is no usable stale, without calling the provider. During the pause,
+  the 503's `Retry-After` is the seconds left in it. After the pause, one
+  request tries again (single-flight).
+- **Why:** The planner has its own timeout. If every request waited for three
+  attempts before serving stale, the planner would give up first and FR-2.13 (a
+  stale forecast still gives a plan) would break. This is a deliberate deviation
+  from the letter of FR-2.6, also written in the design and the service README.
+
+## 34. weather-service: one refresh deadline bounds all attempts and waiters
+- **Agent suggested:** Even without the pause, the first failure of a cell costs
+  three attempts plus backoff, possibly longer than the planner waits. Bound the
+  whole refresh by one deadline.
+- **I decided:** `REFRESH_DEADLINE_SECONDS` (default 5) bounds all attempts of a
+  refresh together, and requests waiting on the same refresh (single-flight)
+  wait no longer than the same deadline. When it runs out, the service falls
+  back to stale or 503 at once. The per-attempt timeout (default 1.5 s) must be
+  smaller than the deadline; otherwise the service refuses to start. The
+  planner's timeout will be set above this deadline.
+- **Why:** One number gives the worst case the planner can plan around. An
+  attempt timeout as long as the deadline would eat the whole budget, and the
+  retries would never happen.
+
+## 35. weather-service: cell center to the provider; time-zone name for "today"
+- **Agent suggested:** Two fixes to the first decisions: (1) asking the provider
+  for the exact point of the first request makes a cell's forecast depend on
+  who asked first; (2) keeping only the provider's UTC offset shifts "today" by
+  an hour around midnight when a DST change happens while the forecast is kept.
+- **I decided:** The provider is always asked for the cell's center (floor to
+  0.1°, plus 0.05), clamped to the valid range at the edges (lat 90 stays 90).
+  The service keeps the time-zone name the provider returns and computes the
+  point's local "today" with `zoneinfo`. The response still echoes the
+  client's lat/lon.
+- **Why:** A cell's content must not depend on request order, and "today" must
+  stay right across DST changes, because serving yesterday as today is one of
+  the errors this service exists to prevent.
