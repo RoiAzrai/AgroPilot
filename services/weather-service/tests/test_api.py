@@ -1,4 +1,5 @@
 import logging
+import math
 
 import httpx
 import pytest
@@ -6,6 +7,7 @@ from fastapi.testclient import TestClient
 
 import main
 from conftest import assert_problem
+from test_provider_validation import ET0, RAIN, valid_payload
 
 FORECAST = "/v1/forecast"
 POINT = {"lat": 31.25, "lon": 34.79}
@@ -129,7 +131,7 @@ def test_wrong_method_405(client):
     assert_problem(client.post(FORECAST, params=POINT), 405, "VALIDATION")
 
 
-def test_bug_is_500_without_details(monkeypatch, fake_provider, clock):
+def test_bug_is_500_without_details(monkeypatch, caplog, fake_provider, clock):
     async def broken_get(cell, days):
         raise ValueError("secret detail from a bug")
 
@@ -140,6 +142,7 @@ def test_bug_is_500_without_details(monkeypatch, fake_provider, clock):
     body = assert_problem(response, 500, "UNAVAILABLE")
     assert body["detail"] == "Internal server error"
     assert "secret" not in response.text
+    assert "secret detail from a bug" in caplog.text
 
 
 def test_startup_fails_without_base_url(monkeypatch):
@@ -165,3 +168,19 @@ def test_key_not_in_logs_or_body(monkeypatch, caplog, fake_provider, clock):
     assert "secret-key-123" not in caplog.text
     for record in caplog.records:
         assert "secret-key-123" not in record.getMessage()
+
+
+def test_negative_zero_from_provider_served_as_zero(monkeypatch, clock):
+    payload = valid_payload()
+    payload["daily"][ET0][1] = -0.0
+    payload["daily"][RAIN][1] = -0.0
+    monkeypatch.setattr(main, "make_client", lambda settings: httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=payload))))
+    with TestClient(main.app) as test_client:
+        response = test_client.get(FORECAST, params=POINT)
+    assert response.status_code == 200
+    assert "-0.0" not in response.text
+    day = response.json()["days"][1]
+    assert day["et0_mm"] == 0.0 and day["rain_mm"] == 0.0
+    assert math.copysign(1, day["et0_mm"]) == 1
+    assert math.copysign(1, day["rain_mm"]) == 1

@@ -84,6 +84,8 @@ def _number(value: object, key: str) -> float:
         raise ProviderError(f"daily.{key} has a non-finite value")
     if number < 0:
         raise ProviderError(f"daily.{key} has a negative value")
+    if number == 0:
+        return 0.0  # -0.0 is served as 0.0
     return number
 
 

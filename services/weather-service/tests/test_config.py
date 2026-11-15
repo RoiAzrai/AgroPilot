@@ -76,3 +76,29 @@ def test_env_wins_over_env_file(tmp_path, monkeypatch):
     s = get_settings()
     assert s.retry_after_seconds == 7
     assert s.provider_retries == 1
+
+
+@pytest.mark.parametrize("value", ["", "   "])
+def test_empty_base_url_rejected(monkeypatch, value):
+    monkeypatch.setenv("PROVIDER_BASE_URL", value)
+    with pytest.raises(RuntimeError, match=r"^PROVIDER_BASE_URL is required"):
+        get_settings()
+
+
+def test_empty_base_url_in_env_file_rejected(tmp_path, monkeypatch):
+    monkeypatch.delenv("PROVIDER_BASE_URL")
+    env_file = tmp_path / ".env"
+    env_file.write_text("PROVIDER_BASE_URL=\n")
+    monkeypatch.setattr(config, "ENV_FILE", env_file)
+    with pytest.raises(RuntimeError, match=r"^PROVIDER_BASE_URL is required"):
+        get_settings()
+
+
+FLOAT_KEYS = [k for k in NUMERIC_KEYS if k not in ("PROVIDER_RETRIES", "RETRY_AFTER_SECONDS")]
+
+
+@pytest.mark.parametrize("key", FLOAT_KEYS)
+def test_infinite_values_rejected(monkeypatch, key):
+    monkeypatch.setenv(key, "inf")
+    with pytest.raises(RuntimeError, match=key):
+        get_settings()

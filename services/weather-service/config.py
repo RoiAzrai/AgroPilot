@@ -4,10 +4,11 @@ from pydantic import Field, ValidationError
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ENV_FILE = Path(__file__).parent / ".env"
+MISSING_BASE_URL = "PROVIDER_BASE_URL is required. Copy .env.example to .env and set it."
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(extra="forbid")
+    model_config = SettingsConfigDict(extra="forbid", allow_inf_nan=False)
 
     provider_base_url: str
     provider_api_key: str = ""
@@ -27,13 +28,13 @@ def get_settings() -> Settings:
     except ValidationError as exc:
         errors = exc.errors()
         if any(err["loc"] == ("provider_base_url",) and err["type"] == "missing" for err in errors):
-            raise RuntimeError(
-                "PROVIDER_BASE_URL is required. Copy .env.example to .env and set it."
-            ) from None
+            raise RuntimeError(MISSING_BASE_URL) from None
         problems = "; ".join(
             f"{str(err['loc'][0]).upper()}: {err['msg']}" for err in errors if err["loc"]
         )
         raise RuntimeError(f"Invalid settings. {problems}") from None
+    if not settings.provider_base_url.strip():
+        raise RuntimeError(MISSING_BASE_URL)
     if settings.provider_attempt_timeout_seconds >= settings.refresh_deadline_seconds:
         raise RuntimeError(
             "PROVIDER_ATTEMPT_TIMEOUT_SECONDS must be below REFRESH_DEADLINE_SECONDS."

@@ -1,4 +1,5 @@
 import copy
+import math
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -133,3 +134,14 @@ def test_invalid_payload_is_provider_error(name):
         mutate(payload)
     with pytest.raises(ProviderError):
         parse_forecast(payload, NOW)
+
+
+def test_negative_zero_becomes_zero():
+    p = valid_payload()
+    p["daily"][ET0][1] = -0.0
+    p["daily"][RAIN][1] = -0.0
+    day = parse_forecast(p, NOW).days[1]
+    assert day.et0_mm == 0.0
+    assert day.rain_mm == 0.0
+    assert math.copysign(1, day.et0_mm) == 1
+    assert math.copysign(1, day.rain_mm) == 1

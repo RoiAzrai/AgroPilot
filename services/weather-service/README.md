@@ -18,7 +18,7 @@ Run **one worker process** (no `--workers`, no multiple replicas). The cache, th
 
 ## Settings
 
-Read from the environment first, then from `.env`. Only these keys are allowed: an unknown key (a typo too) stops the service at startup.
+Read from the environment first, then from `.env`. Only these keys are allowed: an unknown key in `.env` (a typo too) stops the service at startup.
 
 | Key | Required | Default | Meaning |
 | --- | --- | --- | --- |
@@ -33,7 +33,7 @@ Read from the environment first, then from `.env`. Only these keys are allowed: 
 | `FAILURE_PAUSE_SECONDS` | no | `60` | After a failed refresh, no provider call for this long. |
 | `RETRY_AFTER_SECONDS` | no | `5` | `Retry-After` of a 503 outside a pause. |
 
-The service refuses to start when `PROVIDER_BASE_URL` is missing, when `PROVIDER_ATTEMPT_TIMEOUT_SECONDS >= REFRESH_DEADLINE_SECONDS` (one attempt would eat the budget and retries would never happen), when a value is negative, or when `FORECAST_FRESH_SECONDS > FORECAST_MAX_STALE_SECONDS`.
+The service refuses to start when `PROVIDER_BASE_URL` is missing or empty, when `PROVIDER_ATTEMPT_TIMEOUT_SECONDS >= REFRESH_DEADLINE_SECONDS` (one attempt would eat the budget and retries would never happen), when a value is negative or not finite, or when `FORECAST_FRESH_SECONDS > FORECAST_MAX_STALE_SECONDS`.
 
 ## Open-Meteo
 
@@ -57,11 +57,12 @@ Neither rain nor ET0 can physically be below zero, so a negative value is treate
 ## Freshness and failures
 
 - **Fresh** (under 3 h): served from memory, no provider call.
-- **Stale** (up to 24 h, `FORECAST_MAX_STALE_SECONDS`): served with `"stale": true` and its original `fetched_at` when a refresh fails. Irrigation decisions are daily. After a day the forecast may miss a change such as new rain, and a plan built on it could water a field that rain already watered, or skip one that needs water. Older than 24 h: `503 UNAVAILABLE`, never the old forecast. (The service asks for 8 days, so a 24 h old forecast still has 7 full days.)
+- **Stale** (up to 24 h, `FORECAST_MAX_STALE_SECONDS`): served with `"stale": true` and its original `fetched_at` when a refresh fails. Irrigation decisions are daily. After a day the forecast may miss a change such as new rain, and a plan built on it could water a field that rain already watered, or skip one that needs water. Older than 24 h: `503 UNAVAILABLE`, never the old forecast. (The service asks for 8 days, so a 24 h old forecast still has 7 full days, except across a DST change, when two days can drop and `days=7` is a 503.)
 - **One refresh deadline** (`REFRESH_DEADLINE_SECONDS`, 5 s) bounds all attempts and backoffs of one refresh, and requests waiting on the same refresh (single-flight) wait no longer. The planner's timeout will be set above it, so a stale forecast or a 503 always arrives in time.
 - **The pause is a deliberate deviation from the letter of FR-2.6**, which reads as "every request retries twice, then serves stale". After a failed refresh of a cell (all attempts failed or the deadline ran out), for `FAILURE_PAUSE_SECONDS` (60 s) requests for that cell get the stale forecast at once, or a 503 if there is none usable, without calling the provider. Reason: the planner has its own timeout. If every request waited for three attempts while the provider is down, the planner would give up first and FR-2.13 (a stale forecast still gives a plan) would break. After the pause, one request tries again.
 - **`Retry-After`** of a 503 during the pause is the seconds left in it (rounded up, at least 1), so right after a failure it is 60. Outside a pause it is `RETRY_AFTER_SECONDS` (5).
 - **A bug never starts the pause.** Only provider failure or a deadline starts it. Any other exception stays a 500 on every request, so a bug is not hidden as an outage.
+- **First day must be today.** The first served day must be exactly the point's local today; if the provider's first day is later (its clock slightly ahead around midnight), or fewer than `days` remain, the answer is a 503 with `RETRY_AFTER_SECONDS` that starts no pause and heals by itself.
 
 Decisions: `docs/judgment-log.md`, entries 32-37.
 
@@ -108,7 +109,7 @@ sequenceDiagram
 
 ## NFR-2.3 measurement
 
-Goal: a fresh forecast p95 of 100 ms or less at 10 requests per second, with **zero** calls to Open-Meteo. Tools in `perf/` are added by the measurement tasks of this plan (not part of this README's commit).
+Goal: a fresh forecast p95 of 100 ms or less at 10 requests per second, with **zero** calls to Open-Meteo.
 
 Approach:
 

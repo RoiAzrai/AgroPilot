@@ -97,3 +97,9 @@ def test_session_exit_code():
     # Provider calls during the runs fail the session whatever the timings say.
     assert session_exit_code({"status": "PASS"}, calls) == 1
     assert session_exit_code({"status": "INVALID"}, calls) == 1
+
+
+def test_runner_warms_the_points_the_load_tool_requests():
+    from perf import load_test, run_session
+
+    assert run_session.POINTS == load_test.POINTS
