@@ -31,6 +31,7 @@ registry.db
 
 # Load-test output
 services/registry-service/perf/results/
+services/weather-service/perf/results/
 
 # Node / Next.js
 node_modules/
