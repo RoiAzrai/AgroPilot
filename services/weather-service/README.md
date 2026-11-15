@@ -126,3 +126,26 @@ uv run python perf/run_session.py --prefix official
 ```
 
 Options: `--warmup` and `--duration` (load warm-up and measurement seconds). Results go to `perf/results/` (not committed), and an existing prefix is never overwritten.
+
+## Results (NFR-2.3)
+
+Session `official`, commit `8e96a2a`: three Poisson runs at 10 requests per
+second (seeds 1-3), 20 s load warm-up and 300 s measurement each, against the
+local fake provider. **NFR-2.3: PASS** (`run_session.py` exit 0).
+
+| | Value |
+| --- | ---: |
+| Worst p95 | 10.6 ms (run 3, point 31.26/34.80) |
+| Overall p95, seeds 1 / 2 / 3 | 9.9 / 9.8 / 10.3 ms |
+| Runs passing | 3 of 3 |
+| Errors | 0 in 8,870 requests |
+| VM suspensions | 0 |
+| Generator lag p99 | <= 3.3 ms in every run (limit 10 ms) |
+| Provider calls | 3 during the cache warm-up, **0** during the runs |
+
+- The warm-up made 3 provider calls for 4 points because 31.40/34.60 and
+  31.41/34.61 fall in the same 0.1° cell. The zero-calls check passed: every
+  measured request was a fresh forecast served from the cache.
+- Run 3 had one short machine hiccup (p99 31.8 ms, max generator lag 97 ms).
+  The run stayed valid, because its lag p99 was within the limit.
+- The progress display reached 100 %, and the phase log recorded every phase.
