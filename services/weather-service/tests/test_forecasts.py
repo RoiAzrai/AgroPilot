@@ -18,7 +18,12 @@ def anyio_backend():
 
 
 def settings() -> Settings:
-    return Settings(provider_base_url="http://provider.invalid/v1/forecast", _env_file=None)
+    return Settings(
+        provider_base_url="http://provider.invalid/v1/forecast",
+        provider_retries=0,
+        provider_retry_backoff_seconds=0,
+        _env_file=None,
+    )
 
 
 def make_forecast(first: date, fetched_at: datetime, n: int = 8, tz: str = "Asia/Jerusalem"):
@@ -89,7 +94,7 @@ async def test_failure_after_24h_is_unavailable():
     clock.advance(25 * 3600)
     with pytest.raises(Unavailable) as exc:
         await cache.get(CELL, 7)
-    assert exc.value.retry_after == 5
+    assert exc.value.retry_after == 60
 
 
 @pytest.mark.anyio
@@ -97,7 +102,7 @@ async def test_failure_without_forecast_is_unavailable():
     cache, _, _ = setup([ProviderError("down")])
     with pytest.raises(Unavailable) as exc:
         await cache.get(CELL, 7)
-    assert exc.value.retry_after == 5
+    assert exc.value.retry_after == 60
 
 
 @pytest.mark.anyio
