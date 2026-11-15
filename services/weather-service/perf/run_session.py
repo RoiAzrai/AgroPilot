@@ -18,16 +18,24 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
 import httpx
+
+try:
+    from perf.progress import PhaseLog, session_plan, status_line
+except ImportError:  # run as a script: perf/ itself is on sys.path
+    from progress import PhaseLog, session_plan, status_line
 
 SERVICE_DIR = Path(__file__).resolve().parent.parent
 RESULTS = SERVICE_DIR / "perf" / "results"
 SEEDS = (1, 2, 3)
 STARTUP_TIMEOUT_S = 30
 STOP_TIMEOUT_S = 10
+REDRAW_S = 2.0
+PLAIN_LINE_S = 10.0  # when stderr is not a terminal
 
 # Same points as the load tool (a copy: the load tool runs as its own process).
 POINTS = [(31.25, 34.79), (31.26, 34.80), (31.40, 34.60), (31.41, 34.61)]
@@ -188,6 +196,77 @@ def run_load_test(args: argparse.Namespace, service_url: str, seed: int) -> dict
     return json.loads(out.read_text())
 
 
+# --- Progress display (design 5.11) ---------------------------------------------
+
+
+class Display:
+    """Overall progress on stderr, redrawn every REDRAW_S from a thread of this process.
+
+    Time-based against the plan. The load tool runs warm-up and measuring in one
+    subprocess, so a run's two phases are told apart by its elapsed time. Every phase
+    change also goes to the phase log.
+    """
+
+    def __init__(self, plan, log: PhaseLog, stream=None):
+        self.plan, self.log = plan, log
+        self.stream = stream or sys.stderr
+        self.tty = self.stream.isatty()
+        self.lock = threading.Lock()
+        self.stop_event = threading.Event()
+        self.thread = threading.Thread(target=self._loop, daemon=True)
+        self.t0 = time.monotonic()
+        self.index = -1
+        self.phase_start = self.t0
+        self.last_plain = 0.0
+        self.drawn = False
+
+    def start(self) -> None:
+        self.enter(0)
+        self.thread.start()
+
+    def enter(self, index: int) -> None:
+        with self.lock:
+            self._enter(index, time.monotonic())
+
+    def _enter(self, index: int, now: float) -> None:
+        self.index, self.phase_start = index, now
+        if index < len(self.plan):
+            self.log.log(self.plan[index])
+        self._draw(now, force=True)
+
+    def _loop(self) -> None:
+        while not self.stop_event.wait(REDRAW_S):
+            with self.lock:
+                now = time.monotonic()
+                phase = self.plan[self.index] if 0 <= self.index < len(self.plan) else None
+                if phase and phase.name == "load warm-up" and now - self.phase_start >= phase.seconds:
+                    self._enter(self.index + 1, self.phase_start + phase.seconds)
+                self._draw(now, force=False)
+
+    def _draw(self, now: float, force: bool) -> None:
+        line = status_line(self.plan, self.index, now - self.phase_start, now - self.t0)
+        if self.tty:
+            self.stream.write("\r\033[K" + line)
+        elif force or now - self.last_plain >= PLAIN_LINE_S:
+            self.stream.write(line + "\n")
+            self.last_plain = now
+        else:
+            return
+        self.stream.flush()
+        self.drawn = True
+
+    def close(self, finished: bool) -> None:
+        self.stop_event.set()
+        if self.thread.is_alive():
+            self.thread.join()
+        with self.lock:
+            if finished:
+                self._enter(len(self.plan), time.monotonic())
+            if self.tty and self.drawn:
+                self.stream.write("\n")
+                self.stream.flush()
+
+
 def session(args: argparse.Namespace) -> int:
     service_url = f"http://127.0.0.1:{args.service_port}"
     provider_url = f"http://127.0.0.1:{args.provider_port}"
@@ -200,8 +279,10 @@ def session(args: argparse.Namespace) -> int:
     # The environment wins over the service's .env (which is never read here).
     env = {**os.environ, "PROVIDER_BASE_URL": f"{provider_url}/v1/forecast"}
     children = []
+    plan = session_plan(args.warmup, args.duration)
+    display = Display(plan, PhaseLog(RESULTS / f"{args.prefix}-phases.log"))
+    display.start()
     try:
-        print("[setup] starting the fake provider and the service", flush=True)
         children.append(start(
             [sys.executable, "perf/fake_provider.py", "--port", str(args.provider_port)],
             provider_log,
@@ -216,25 +297,31 @@ def session(args: argparse.Namespace) -> int:
         ))
         wait_until_up(f"{service_url}/health", children[1], "service", service_log)
 
-        print("[cache warm-up] one request per point", flush=True)
+        display.enter(1)
         warm_cache(service_url)
         calls_after_warmup = provider_calls(provider_url)
 
         reports = []
         for i, seed in enumerate(SEEDS, start=1):
-            print(f"[run {i}/3] Poisson seed {seed}", flush=True)
+            display.enter(2 * i)  # load warm-up; the display moves on to measuring itself
             reports.append(run_load_test(args, service_url, seed))
         calls_after_runs = provider_calls(provider_url)
+        display.enter(len(plan) - 2)
+    except BaseException:
+        display.close(finished=False)
+        raise
     finally:
         for child in reversed(children):
             stop(child)
 
     summary = session_summary(reports)
+    display.enter(len(plan) - 1)
     zero_calls = zero_calls_check(calls_after_warmup, calls_after_runs)
     exit_code = session_exit_code(summary, zero_calls)
     lines = format_summary(
         args.prefix, summary, zero_calls, (calls_after_warmup, calls_after_runs), exit_code
     )
+    display.close(finished=True)
     text = "\n".join(lines)
     print("\n" + text)
     (RESULTS / f"{args.prefix}-summary.txt").write_text(text + "\n")
