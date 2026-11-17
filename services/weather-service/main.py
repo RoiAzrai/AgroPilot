@@ -11,7 +11,7 @@ from config import Settings, get_settings
 from errors import register_error_handlers
 from forecasts import ForecastCache
 from models import DayOut, ForecastOut
-from provider import SOURCE, fetch_forecast
+from provider import PAST_DAYS, SOURCE, fetch_forecast
 
 
 def make_client(settings: Settings) -> httpx.AsyncClient:
@@ -52,8 +52,9 @@ async def forecast(
     lat: Annotated[float, Query(ge=-90, le=90, allow_inf_nan=False)],
     lon: Annotated[float, Query(ge=-180, le=180, allow_inf_nan=False)],
     days: Annotated[int, Query(ge=1, le=7)] = 7,
+    past_days: Annotated[int, Query(ge=0, le=PAST_DAYS)] = 0,
 ) -> ForecastOut:
-    answer = await request.app.state.cache.get(cell_of(lat, lon), days)
+    answer = await request.app.state.cache.get(cell_of(lat, lon), days, past_days=past_days)
     return ForecastOut(
         lat=lat,
         lon=lon,

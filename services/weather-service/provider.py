@@ -1,7 +1,8 @@
 """Open-Meteo response validation (design 5.5, FR-2.8).
 
 Only this module knows Open-Meteo field names. Anything doubtful raises
-ProviderError; we never return a number the provider did not give.
+ProviderError; we never return a number the provider did not give. A bad value
+in the past days (W23) drops the past part instead: those days are never served.
 """
 
 import logging
@@ -23,7 +24,9 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger("provider")
 
 SOURCE = "open-meteo"
+PAST_DAYS = 92
 FORECAST_DAYS = 8
+TOTAL_DAYS = PAST_DAYS + FORECAST_DAYS
 
 _ET0 = "et0_fao_evapotranspiration"
 _RAIN = "precipitation_sum"
@@ -42,6 +45,9 @@ class Forecast:
     days: tuple[Day, ...]
     fetched_at: datetime
     timezone_name: str
+    # False when a past value was unusable (W23): `days` then holds only the
+    # forecast days, and no request with past_days > 0 is answered from it.
+    past_available: bool = True
 
 
 class ProviderError(Exception):
@@ -68,8 +74,8 @@ def _array(daily: dict, key: str) -> list:
     arr = daily.get(key)
     if not isinstance(arr, list):
         raise ProviderError(f"daily.{key} missing or not a list")
-    if len(arr) != FORECAST_DAYS:
-        raise ProviderError(f"daily.{key} has {len(arr)} items, expected {FORECAST_DAYS}")
+    if len(arr) != TOTAL_DAYS:
+        raise ProviderError(f"daily.{key} has {len(arr)} items, expected {TOTAL_DAYS}")
     return arr
 
 
@@ -117,11 +123,18 @@ def parse_forecast(payload: object, fetched_at: datetime) -> Forecast:
         if cur - prev != timedelta(days=1):
             raise ProviderError("daily.time dates are not consecutive")
 
-    days = tuple(
-        Day(d, _number(e, _ET0), _number(r, _RAIN))
-        for d, e, r in zip(dates, et0s, rains)
-    )
-    return Forecast(days=days, fetched_at=fetched_at, timezone_name=timezone_name)
+    rows = list(zip(dates, et0s, rains))
+    forecast_days = tuple(_day(*row) for row in rows[PAST_DAYS:])
+    try:
+        past_days = tuple(_day(*row) for row in rows[:PAST_DAYS])
+    except ProviderError as exc:
+        logger.warning("past days unavailable, only the forecast days are kept: %s", exc)
+        return Forecast(forecast_days, fetched_at, timezone_name, past_available=False)
+    return Forecast(past_days + forecast_days, fetched_at, timezone_name)
+
+
+def _day(d: date, et0: object, rain: object) -> Day:
+    return Day(d, _number(et0, _ET0), _number(rain, _RAIN))
 
 
 def _fail(reason: str) -> ProviderError:
@@ -142,6 +155,7 @@ async def fetch_forecast(
         "longitude": lon,
         "daily": f"{_ET0},{_RAIN}",
         "forecast_days": FORECAST_DAYS,
+        "past_days": PAST_DAYS,
         "timezone": "auto",
     }
     if settings.provider_api_key:

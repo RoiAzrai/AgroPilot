@@ -40,7 +40,8 @@ def assert_problem(response, status: int, code: str) -> dict:
 
 
 class FakeProvider:
-    """MockTransport handler: a valid 8-day forecast for any point, or a 500
+    """MockTransport handler: a valid 100-day answer (92 past + 8 forecast days)
+    for any point, or a 500
     while `fail` is set. Any host but provider.invalid fails the test."""
 
     def __init__(self) -> None:

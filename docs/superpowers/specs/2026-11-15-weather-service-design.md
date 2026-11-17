@@ -99,6 +99,16 @@ per cell, sliced per request; W6 single-flight per cell; W7 cell = floor to
 time-zone name, 5.7); W10 errors as in the registry: problem+json,
 `VALIDATION` 422 and `UNAVAILABLE` 503 with `Retry-After` from `.env` (5.8).
 
+*Update 17.11 (past_days; judgment log 38):* W4 is amended: the answer drops
+the days before local today − `past_days` (not before local today), and is a
+503 if any day of the window is missing (5.7). W20 optional `past_days`
+0..92, default 0, 422 otherwise; W21 same shape, `days` runs from local today
+− `past_days` to local today + `days` − 1; W22 one entry per cell with 92
+past + 8 forecast days; W23 a bad value in a past day marks only the past
+unavailable, not a provider failure (5.5); W26 the `Retry-After` of a 503
+because the past is unavailable is the seconds until the entry stops being
+fresh (at least 1), or the seconds left in a failure pause.
+
 ### 5.1 Layout
 
 ```
@@ -148,11 +158,13 @@ Startup validation (clear `RuntimeError`, service does not start):
 
 ### 5.3 API
 
-`GET /v1/forecast?lat={lat}&lon={lon}&days={days}`
+`GET /v1/forecast?lat={lat}&lon={lon}&days={days}&past_days={past_days}`
 
 - `lat`: number, -90..90; `lon`: number, -180..180; both required; NaN and
   infinity rejected. `days`: integer 1..7, default `7` *(builder's call: same
-  default as the planner)*. Anything else: `422 VALIDATION` (FR-2.4).
+  default as the planner)*. `past_days`: integer 0..92, default `0` (W20;
+  update 17.11). Both accept the loose integer forms pydantic accepts, such as
+  `3.0`. Anything else: `422 VALIDATION` (FR-2.4).
 - `200`:
 
 ```json
@@ -170,8 +182,9 @@ Startup validation (clear `RuntimeError`, service does not start):
     point.
   - `fetched_at`: when the service received the provider response (UTC,
     seconds, `Z`). For a stale answer, the original fetch time.
-  - `days`: exactly `days` entries, consecutive dates, starting at the
-    point's local today (5.7).
+  - `days`: exactly `past_days + days` entries, consecutive dates, starting
+    at the point's local today − `past_days` (5.7; with the default
+    `past_days=0`, at local today).
   - `source`: a constant of the provider module.
 - `GET /health` -> `200 {"status": "ok"}`. Never calls the provider.
 - Unknown route 404 `NOT_FOUND`, wrong method 405 `VALIDATION`, unexpected
@@ -190,8 +203,12 @@ Startup validation (clear `RuntimeError`, service does not start):
 
 ### 5.5 Provider call and validation (`provider.py`; W2, W8, W9, FR-2.8)
 
+*Update 17.11 (past_days): the request also asks for 92 past days, the
+response has 100 days, and a bad value in a past day no longer fails the
+attempt (W22, W23; judgment log 38).*
+
 Request: `latitude`, `longitude` (cell center), `daily=et0_fao_evapotranspiration,precipitation_sum`,
-`forecast_days=8`, `timezone=auto`, plus `apikey` when set.
+`forecast_days=8`, `past_days=92`, `timezone=auto`, plus `apikey` when set.
 
 The response is accepted only if **all** of these hold; otherwise the attempt
 is a provider failure (retry, then 5.6):
@@ -201,15 +218,23 @@ is a provider failure (retry, then 5.6):
 - `daily_units.et0_fao_evapotranspiration == "mm"` and
   `daily_units.precipitation_sum == "mm"`.
 - `daily.time`, `daily.et0_fao_evapotranspiration`, `daily.precipitation_sum`
-  are lists of exactly 8 items each.
-- Every date parses as ISO `YYYY-MM-DD`, and the 8 dates are consecutive.
-- Every value is a real number: not `null`, not a bool, not a string, finite.
-  *(builder's call)* Negative values are rejected too (physically impossible
-  for both variables).
+  are lists of exactly 100 items each (92 past days, then 8 forecast days).
+- Every date parses as ISO `YYYY-MM-DD`, and the 100 dates are consecutive.
+- Every value of the 8 forecast days is a real number: not `null`, not a
+  bool, not a string, finite. *(builder's call)* Negative values are rejected
+  too (physically impossible for both variables).
 - A real `0.0` is valid and kept as is.
 
-Result: a provider-neutral `Forecast(days=[Day(date, et0_mm, rain_mm)] * 8,
-fetched_at, timezone_name)`. No Open-Meteo name leaves this module. Each
+A value that fails the number checks in one of the 92 **past** days does not
+fail the attempt (W23): the past days of that entry are dropped and marked
+unavailable, one warning is logged, and the forecast days are kept.
+
+Result: a provider-neutral `Forecast(days=[Day(date, et0_mm, rain_mm)] * 100
+(or * 8 when the past is unavailable), fetched_at, timezone_name,
+past_available)`. Open-Meteo documents that requests with more than 7 days
+of data count as more than one call (example from the docs: 4 weeks = 3.0
+calls). Conservative upper bound: ~14 calls per 100-day fetch, ~112 calls a
+day per cell at one refresh per 3 h, far below the free limit of 10,000 a day. No Open-Meteo name leaves this module. Each
 failed attempt logs a warning with the reason (timeout, status N, not JSON,
 which check failed), never the API key; httpx's own request logging (which
 prints URLs with query strings) is kept below INFO or the key is redacted.
@@ -241,7 +266,8 @@ For a request in cell `c` at time `now`:
    `stale: true` and its original `fetched_at`. Otherwise `503 UNAVAILABLE`,
    `Retry-After` = the seconds left in the pause (rounded up, at least 1), or
    `RETRY_AFTER_SECONDS` outside a pause. Each fallback logs a warning with the
-   cell and the reason.
+   cell and the reason: "serving stale" only when the stale answer is actually
+   served, otherwise "no usable forecast" (update 17.11).
 
 **The pause is a deliberate deviation from the letter of FR-2.6**, which reads
 as "every request retries twice, then serves stale". Owner's reason: the
@@ -257,6 +283,29 @@ All of this assumes **one worker process**: the cache and single-flight live
 in the process memory. README states it.
 
 ### 5.7 Building the answer (W4, W9 amended)
+
+*Update 17.11 (past_days): the answer is a window that can start before
+today (W20, W21; judgment log 38). This also replaces "starting at the
+point's local today" in 5.3 when `past_days > 0`.*
+
+- Window = local today − `past_days` .. local today + `days` − 1. Every date
+  of the window must be in the entry, in order; otherwise `503 UNAVAILABLE`
+  (`Retry-After` as in 5.6 step 5). This replaces the rule below that the
+  first remaining day must be today. With `past_days=0` the two are the same,
+  except when the provider's clock is ahead (below).
+- `past_days > 0` and the entry's past is unavailable (5.5): `503
+  UNAVAILABLE`. `Retry-After` (W26): the seconds until the entry stops being
+  fresh (its next refresh), rounded up, at least 1; during a failure pause,
+  the seconds left in it. It starts no pause and logs at debug level only
+  (the warning was logged once, at parse). `past_days=0` is not affected.
+- Provider clock ahead around midnight: local today is in the provider's past
+  days and is served with its correct date (before: 503), also with
+  `past_days=0`. Accepted. Only while the past is available; without it the
+  entry starts at the provider's today and the answer is still a 503.
+- A 24 h old entry still has 93 past days, so `past_days=92` keeps working.
+
+Original rules (still true for `past_days=0`, except the provider-clock case
+above, where the 503 test below now applies only to an entry without past days):
 
 - Local today = `now` converted with `ZoneInfo(forecast.timezone_name)`. The
   time-zone *name* is kept, not the UTC offset, so a DST change during the
@@ -278,9 +327,10 @@ in the process memory. README states it.
 
 | Situation | Status | `code` |
 | --- | --- | --- |
-| Bad or missing `lat`/`lon`/`days` | 422 | `VALIDATION` |
+| Bad or missing `lat`/`lon`/`days`, bad `past_days` (not an integer 0..92) | 422 | `VALIDATION` |
 | Provider failed / paused and no forecast <= 24 h | 503 + `Retry-After` | `UNAVAILABLE` |
-| Fewer than `days` future days left | 503 + `Retry-After` | `UNAVAILABLE` |
+| A day of the requested window missing (e.g. fewer than `days` future days left) | 503 + `Retry-After` | `UNAVAILABLE` |
+| `past_days > 0` and the entry's past days are unavailable (update 17.11) | 503 + `Retry-After` until the next refresh, or left in the pause (W26) | `UNAVAILABLE` |
 | Unknown route | 404 | `NOT_FOUND` |
 | Wrong method | 405 | `VALIDATION` |
 | Unexpected exception | 500, no details | `UNAVAILABLE` |
@@ -347,7 +397,8 @@ Goal: fresh forecast p95 <= 100 ms at 10 req/s, with **zero** calls to
 Open-Meteo.
 
 - `perf/fake_provider.py`: a local HTTP server on its own port that returns a
-  valid 8-day Open-Meteo-shaped response for any point and counts the calls
+  valid 100-day (92 past + 8 forecast days) Open-Meteo-shaped response for
+  any point and counts the calls
   it receives (readable by the runner).
 - The service runs with `PROVIDER_BASE_URL` pointing at the fake provider,
   set explicitly in the service's environment by the runner (environment

@@ -6,7 +6,7 @@ import pytest
 
 from config import Settings
 from provider import Forecast, ProviderError, fetch_forecast
-from test_provider_validation import valid_payload
+from test_provider_validation import TOTAL, valid_payload
 
 NOW = datetime(2026, 11, 15, 6, 0, tzinfo=timezone.utc)
 URL = "http://provider.invalid/v1/forecast"
@@ -43,6 +43,7 @@ async def test_request_params():
         "longitude": "34.75",
         "daily": "et0_fao_evapotranspiration,precipitation_sum",
         "forecast_days": "8",
+        "past_days": "92",
         "timezone": "auto",
     }
     assert dict(seen[1].url.params)["apikey"] == "k"
@@ -92,7 +93,7 @@ async def test_key_never_logged(caplog):
 async def test_success_returns_forecast_with_now():
     forecast = await call(lambda r: httpx.Response(200, json=valid_payload()))
     assert forecast.fetched_at == NOW
-    assert len(forecast.days) == 8
+    assert len(forecast.days) == TOTAL
 
 
 @pytest.mark.anyio

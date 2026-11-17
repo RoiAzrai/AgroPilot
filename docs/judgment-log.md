@@ -568,3 +568,35 @@ and why.
 - **Why:** Same rule as the registry (entry 14): a bug must not be hidden as an
   outage. Retrying cannot fix it, and a 503 would invite retries and hide the
   real cause.
+
+## 38. weather-service: `past_days` (deviation from FR-2.3)
+- **Agent suggested:** For the planner's "suggest and confirm" bucket start
+  (the bucket level from the date of the last irrigation), add an optional
+  `past_days` (0-92) to `GET /v1/forecast`, keep one cache entry per cell that
+  always holds 92 past + 8 forecast days, and treat a `null` or invalid value
+  anywhere in the 100 days as a provider failure, as FR-2.8 does for the 8 days.
+- **I decided:** `past_days` 0-92, default 0, with the same response shape;
+  `past_days=0` is the old response (except the clock case below). One entry
+  per cell, 92 + 8 days. Open-Meteo documents that requests with more than 7
+  days of data count as more than one call (example from the docs: 4 weeks =
+  3.0 calls); a conservative upper bound is ~14 calls per 100-day fetch, so
+  ~112 calls a day per cell at one refresh per 3 h, far below the free limit
+  of 10,000 a day.
+  But a bad value in a **past** day only marks the past days of that entry
+  unavailable: they are never served, `past_days > 0` gets a 503, and it is
+  not a provider failure (no retry, no pause, no stale fallback). One warning
+  is logged when the entry is parsed, not one per request. W26: that 503's
+  `Retry-After` is the seconds until the entry stops being fresh (its next
+  refresh), at least 1; during a failure pause, the seconds left in it. (First
+  decided: the default `RETRY_AFTER_SECONDS`; changed, because a client told
+  to retry in 5 s would get the same 503 for up to 3 h.) Structural problems anywhere, and a bad value in a
+  forecast day, stay provider failures. The served window must be complete
+  and contiguous; when the provider's clock is ahead around midnight, today is
+  now served from its past days with the correct date instead of a 503, also
+  with `past_days=0`, but only while the past days are available. A bad past
+  value can come back on every fetch until its date leaves the 92-day window,
+  so the planner must handle a lasting 503 for `past_days > 0`.
+- **Why:** FR-2.3 says the forecast starts today, but the planner cannot
+  suggest a bucket level without the ET0 and rain since the last irrigation.
+  An add-on must not break what worked before it: one bad value three months
+  ago must not cost a grower today's plan.

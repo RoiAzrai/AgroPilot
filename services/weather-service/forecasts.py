@@ -45,13 +45,13 @@ class ForecastCache:
         self._paused_until: dict[Cell, datetime] = {}
         self._tasks: set[asyncio.Task] = set()
 
-    async def get(self, cell: Cell, days: int) -> Answer:
+    async def get(self, cell: Cell, days: int, past_days: int = 0) -> Answer:
         now = self._clock()
         forecast = self._forecasts.get(cell)
         if forecast and self._age(forecast, now) < self._settings.forecast_fresh_seconds:
-            return self._answer(forecast, days, now, stale=False)
+            return self._answer(cell, forecast, days, past_days, now, stale=False)
         if self._paused(cell, now):
-            return self._fall_back(cell, days, "paused after a failed refresh")
+            return self._fall_back(cell, days, past_days, "paused after a failed refresh")
         future = self._refreshing.get(cell)
         if future is None:
             # Leader: the refresh task is bounded by the deadline itself.
@@ -71,8 +71,10 @@ class ForecastCache:
         if isinstance(failure, BaseException):
             raise failure
         if failure is not None:
-            return self._fall_back(cell, days, failure)
-        return self._answer(self._forecasts[cell], days, self._clock(), stale=False)
+            return self._fall_back(cell, days, past_days, failure)
+        return self._answer(
+            cell, self._forecasts[cell], days, past_days, self._clock(), stale=False
+        )
 
     async def _refresh(self, cell: Cell, future: asyncio.Future) -> None:
         """Resolves `future` with None (success), a reason to fall back, or an
@@ -122,15 +124,30 @@ class ForecastCache:
         left = (self._paused_until[cell] - now).total_seconds()
         return max(math.ceil(left), 1)
 
-    def _fall_back(self, cell: Cell, days: int, reason: str) -> Answer:
+    def _fall_back(self, cell: Cell, days: int, past_days: int, reason: str) -> Answer:
         now = self._clock()
         retry_after = self._retry_after(cell, now)
         forecast = self._forecasts.get(cell)
         if forecast and self._age(forecast, now) <= self._settings.forecast_max_stale_seconds:
+            try:
+                answer = self._answer(
+                    cell, forecast, days, past_days, now, stale=True, retry_after=retry_after
+                )
+            except Unavailable:
+                logger.warning("no usable forecast for cell %s: %s", cell, reason)
+                raise
             logger.warning("serving stale forecast for cell %s: %s", cell, reason)
-            return self._answer(forecast, days, now, stale=True, retry_after=retry_after)
+            return answer
         logger.warning("no usable forecast for cell %s: %s", cell, reason)
         raise Unavailable(retry_after)
+
+    def _past_retry_after(self, cell: Cell, forecast: Forecast, now: datetime) -> int:
+        """W26: the seconds left in a pause, else until the entry stops being fresh
+        (its next refresh); rounded up, at least 1."""
+        if self._paused(cell, now):
+            return self._retry_after(cell, now)
+        left = self._settings.forecast_fresh_seconds - self._age(forecast, now)
+        return max(math.ceil(left), 1)
 
     @staticmethod
     def _age(forecast: Forecast, now: datetime) -> float:
@@ -138,17 +155,30 @@ class ForecastCache:
 
     def _answer(
         self,
+        cell: Cell,
         forecast: Forecast,
         days: int,
+        past_days: int,
         now: datetime,
         stale: bool,
         retry_after: int | None = None,
     ) -> Answer:
+        """The window (local today - past_days) .. (local today + days - 1), every
+        date present and in order, or Unavailable. Never pads or shifts a day."""
+        if past_days and not forecast.past_available:
+            # Not a provider failure (W23), so no pause. The provider logged the
+            # warning once when it parsed this entry; per request only debug.
+            logger.debug("past days unavailable for cell %s; past_days=%d", cell, past_days)
+            raise Unavailable(self._past_retry_after(cell, forecast, now))
         today = now.astimezone(ZoneInfo(forecast.timezone_name)).date()
-        remaining = [d for d in forecast.days if d.date >= today]
-        if len(remaining) < days or not remaining or remaining[0].date != today:
-            logger.warning("forecast does not cover local today and %d days", days)
+        first = today - timedelta(days=past_days)
+        window = [d for d in forecast.days if d.date >= first][: past_days + days]
+        expected = [first + timedelta(days=i) for i in range(past_days + days)]
+        if [d.date for d in window] != expected:
+            logger.warning(
+                "forecast does not cover %d past days, local today and %d days", past_days, days
+            )
             if retry_after is None:
                 retry_after = self._settings.retry_after_seconds
             raise Unavailable(retry_after)
-        return Answer(days=remaining[:days], fetched_at=forecast.fetched_at, stale=stale)
+        return Answer(days=window, fetched_at=forecast.fetched_at, stale=stale)

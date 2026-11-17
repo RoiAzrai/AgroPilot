@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 import main
 from conftest import assert_problem
-from test_provider_validation import ET0, RAIN, valid_payload
+from test_provider_validation import ET0, PAST, RAIN, valid_payload
 
 FORECAST = "/v1/forecast"
 POINT = {"lat": 31.25, "lon": 34.79}
@@ -132,7 +132,7 @@ def test_wrong_method_405(client):
 
 
 def test_bug_is_500_without_details(monkeypatch, caplog, fake_provider, clock):
-    async def broken_get(cell, days):
+    async def broken_get(cell, days, past_days=0):
         raise ValueError("secret detail from a bug")
 
     use_fake_provider(monkeypatch, fake_provider)
@@ -172,8 +172,9 @@ def test_key_not_in_logs_or_body(monkeypatch, caplog, fake_provider, clock):
 
 def test_negative_zero_from_provider_served_as_zero(monkeypatch, clock):
     payload = valid_payload()
-    payload["daily"][ET0][1] = -0.0
-    payload["daily"][RAIN][1] = -0.0
+    # Index PAST + 1 is tomorrow, the second day served (before: index 1 of 8).
+    payload["daily"][ET0][PAST + 1] = -0.0
+    payload["daily"][RAIN][PAST + 1] = -0.0
     monkeypatch.setattr(main, "make_client", lambda settings: httpx.AsyncClient(
         transport=httpx.MockTransport(lambda request: httpx.Response(200, json=payload))))
     with TestClient(main.app) as test_client:
@@ -184,3 +185,75 @@ def test_negative_zero_from_provider_served_as_zero(monkeypatch, clock):
     assert day["et0_mm"] == 0.0 and day["rain_mm"] == 0.0
     assert math.copysign(1, day["et0_mm"]) == 1
     assert math.copysign(1, day["rain_mm"]) == 1
+
+
+# --- past_days (W20-W23) ---
+
+
+@pytest.mark.parametrize("value", ["-1", "93", "1.5", "", "nan", "abc"])
+def test_bad_past_days_is_422(client, fake_provider, value):
+    response = client.get(f"{FORECAST}?lat=31.25&lon=34.79&past_days={value}")
+    body = assert_problem(response, 422, "VALIDATION")
+    assert "past_days" in body["detail"]
+    assert fake_provider.calls == 0
+
+
+def test_past_days_zero_is_todays_response(client):
+    without = client.get(FORECAST, params=POINT)
+    zero = client.get(FORECAST, params={**POINT, "past_days": 0})
+    assert without.status_code == zero.status_code == 200
+    assert without.content == zero.content
+    assert [d["date"] for d in zero.json()["days"]] == [f"2026-11-{15 + i}" for i in range(7)]
+
+
+def test_past_days_three_adds_three_days_before_today(client):
+    payload = valid_payload()
+    response = client.get(FORECAST, params={**POINT, "past_days": 3})
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body) == {"lat", "lon", "source", "fetched_at", "stale", "days"}
+    assert len(body["days"]) == 10
+    for i, day in enumerate(body["days"]):
+        assert set(day) == {"date", "et0_mm", "rain_mm"}
+        assert day["date"] == payload["daily"]["time"][PAST - 3 + i]
+        assert day["et0_mm"] == payload["daily"][ET0][PAST - 3 + i]
+        assert day["rain_mm"] == payload["daily"][RAIN][PAST - 3 + i]
+    assert body["days"][3]["date"] == "2026-11-15"
+
+
+def test_stale_answer_with_past_days(client, fake_provider, clock):
+    assert client.get(FORECAST, params=POINT).status_code == 200
+    clock.advance(4 * 3600)
+    fake_provider.fail = True
+    response = client.get(FORECAST, params={**POINT, "past_days": 92, "days": 1})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["stale"] is True
+    assert body["fetched_at"] == "2026-11-15T06:00:00Z"
+    assert len(body["days"]) == 93
+    assert body["days"][0]["date"] == "2026-08-15"
+    assert body["days"][-1]["date"] == "2026-11-15"
+
+
+def test_unusable_past_value_gives_503_only_with_past_days(monkeypatch, clock):
+    payload = valid_payload()
+    payload["daily"][ET0][0] = None
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, json=payload)
+
+    monkeypatch.setattr(main, "make_client", lambda settings: httpx.AsyncClient(
+        transport=httpx.MockTransport(handler)))
+    with TestClient(main.app) as test_client:
+        forecast_only = test_client.get(FORECAST, params=POINT)
+        with_past = test_client.get(FORECAST, params={**POINT, "past_days": 1})
+    assert forecast_only.status_code == 200
+    assert forecast_only.json()["stale"] is False
+    assert len(forecast_only.json()["days"]) == 7
+    assert_problem(with_past, 503, "UNAVAILABLE")
+    # W26: seconds until the entry's next refresh (fresh for 3 h, clock not moved).
+    assert with_past.headers["retry-after"] == "10800"
+    # Not a provider failure: one call, no retries, no pause.
+    assert len(calls) == 1

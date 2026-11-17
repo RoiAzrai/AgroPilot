@@ -2,7 +2,7 @@
 
 Daily forecast (ET0 and rain, in mm) for AgroPilot (FastAPI, port 8001). It asks Open-Meteo, keeps the answer in memory by 0.1 degree cell, and never makes up a number the provider did not give.
 
-`GET /v1/forecast?lat={lat}&lon={lon}&days={days}` (`days` 1..7, default 7) and `GET /health` (never calls the provider).
+`GET /v1/forecast?lat={lat}&lon={lon}&days={days}&past_days={past_days}` (`days` 1..7, default 7; `past_days` 0..92, default 0) and `GET /health` (never calls the provider).
 
 ## Run
 
@@ -44,11 +44,13 @@ Checked against the documentation on 2026-11-15:
 - `timezone=auto` resolves the time zone from the coordinates, and the docs say `timezone` is required when daily variables are requested. The service keeps the time-zone name from the response and computes the point's local "today" with it, so "today" stays right across DST changes.
 - `apikey` is for commercial use. Paying customers call the host `customer-api.open-meteo.com` with `&apikey=...`; apart from the host and the key the request is identical. Docs: https://open-meteo.com/en/docs and https://open-meteo.com/en/pricing. To use it: `PROVIDER_BASE_URL=https://customer-api.open-meteo.com/v1/forecast` and `PROVIDER_API_KEY=<key>`.
 
-The service asks for `forecast_days=8` and for the **center** of the 0.1 degree cell, so the content of a cell never depends on which request came first.
+The service asks for `past_days=92` and `forecast_days=8` (100 days: 92 past days, today, 7 more) and for the **center** of the 0.1 degree cell, so the content of a cell never depends on which request came first. `past_days` accepts 0 to 92 in the Open-Meteo docs.
+
+Cost: Open-Meteo documents that requests with more than 7 days of data count as more than one call (example from the docs: 4 weeks = 3.0 calls). A conservative upper bound: ~14 calls per 100-day fetch -> ~112 calls/day per cell at one refresh per 3 h, far below the free limit of 10,000/day.
 
 ### Why negative values are rejected, and the risk
 
-Neither rain nor ET0 can physically be below zero, so a negative value is treated as bad provider data (provider failure), like `null`, a non-number, a wrong unit or a wrong length. A real `0.0` is valid. The risk: daily ET0 can, rarely, come out slightly negative on cold, humid nights (condensation). If that happens, the cell falls back to the stale forecast or to 503, instead of serving that value.
+Neither rain nor ET0 can physically be below zero, so a negative value is treated as bad provider data, like `null` or a non-number. In one of the 8 forecast days it is a provider failure, like a wrong unit or a wrong length; in a past day it makes the past days unavailable (see Past days). A real `0.0` is valid. The risk: daily ET0 can, rarely, come out slightly negative on cold, humid nights (condensation). If that happens in a forecast day, the cell falls back to the stale forecast or to 503, instead of serving that value. In a past day it only marks the past days unavailable (see Past days); the forecast is still served.
 
 ### Why `precipitation_sum` and not `rain_sum`
 
@@ -57,14 +59,23 @@ Neither rain nor ET0 can physically be below zero, so a negative value is treate
 ## Freshness and failures
 
 - **Fresh** (under 3 h): served from memory, no provider call.
-- **Stale** (up to 24 h, `FORECAST_MAX_STALE_SECONDS`): served with `"stale": true` and its original `fetched_at` when a refresh fails. Irrigation decisions are daily. After a day the forecast may miss a change such as new rain, and a plan built on it could water a field that rain already watered, or skip one that needs water. Older than 24 h: `503 UNAVAILABLE`, never the old forecast. (The service asks for 8 days, so a 24 h old forecast still has 7 full days, except across a DST change, when two days can drop and `days=7` is a 503.)
+- **Stale** (up to 24 h, `FORECAST_MAX_STALE_SECONDS`): served with `"stale": true` and its original `fetched_at` when a refresh fails. Irrigation decisions are daily. After a day the forecast may miss a change such as new rain, and a plan built on it could water a field that rain already watered, or skip one that needs water. Older than 24 h: `503 UNAVAILABLE`, never the old forecast. (The service asks for 8 forecast days, so a 24 h old forecast still has 7 full days, except across a DST change, when two days can drop and `days=7` is a 503. It also still has 93 past days, so `past_days=92` keeps working.)
 - **One refresh deadline** (`REFRESH_DEADLINE_SECONDS`, 5 s) bounds all attempts and backoffs of one refresh, and requests waiting on the same refresh (single-flight) wait no longer. The planner's timeout will be set above it, so a stale forecast or a 503 always arrives in time.
 - **The pause is a deliberate deviation from the letter of FR-2.6**, which reads as "every request retries twice, then serves stale". After a failed refresh of a cell (all attempts failed or the deadline ran out), for `FAILURE_PAUSE_SECONDS` (60 s) requests for that cell get the stale forecast at once, or a 503 if there is none usable, without calling the provider. Reason: the planner has its own timeout. If every request waited for three attempts while the provider is down, the planner would give up first and FR-2.13 (a stale forecast still gives a plan) would break. After the pause, one request tries again.
-- **`Retry-After`** of a 503 during the pause is the seconds left in it (rounded up, at least 1), so right after a failure it is 60. Outside a pause it is `RETRY_AFTER_SECONDS` (5).
+- **`Retry-After`** of a 503 during the pause is the seconds left in it (rounded up, at least 1), so right after a failure it is 60. Outside a pause it is `RETRY_AFTER_SECONDS` (5), except for a 503 because the past days are unavailable (see Past days).
 - **A bug never starts the pause.** Only provider failure or a deadline starts it. Any other exception stays a 500 on every request, so a bug is not hidden as an outage.
-- **First day must be today.** The first served day must be exactly the point's local today; if the provider's first day is later (its clock slightly ahead around midnight), or fewer than `days` remain, the answer is a 503 with `RETRY_AFTER_SECONDS` that starts no pause and heals by itself.
+- **The whole window must be there.** The served days are the point's local today minus `past_days` through local today plus `days - 1`, every date present and in order. If one is missing (for example fewer than `days` forecast days remain), the answer is a 503 with `RETRY_AFTER_SECONDS` (or the seconds left in a pause) that starts no pause and heals by itself. Never padded, never shifted.
 
-Decisions: `docs/judgment-log.md`, entries 32-37.
+Decisions: `docs/judgment-log.md`, entries 32-38.
+
+## Past days (`past_days`)
+
+`past_days=N` adds the N days before today, from the same cache entry: `days` then runs from today minus N to today plus `days - 1`, ordered by date. The response shape does not change. `past_days=0` (the default) gives the response the service gave before `past_days` existed, with one exception: the provider-clock case below. Like `days`, `past_days` accepts the loose integer forms pydantic accepts, for example `3.0`.
+
+- **A deliberate deviation from FR-2.3**, which says the forecast starts today. Reason: the planner suggests the soil bucket level at the start of a plan from the date of the grower's last irrigation ("suggest and confirm"), and for that it needs the ET0 and rain of the days since then. Judgment log 38.
+- **One cache entry per cell holds both parts.** Every fetch asks for 92 past days and 8 forecast days; freshness, single-flight, the pause, stale answers and the 24 h rule apply to the entry as a whole.
+- **A bad past value does not break the forecast.** Wrong length, dates, units, fields or time zone anywhere is still a provider failure. A `null` or invalid value in a forecast day is still a provider failure. A `null` or invalid value in a past day only marks the past days of that entry unavailable: they are never served, one warning is logged when the entry is parsed (not one per request), and it is not a provider failure (no retry, no pause, no stale fallback). Requests with `past_days=0` are not affected (except the provider-clock case below); requests with `past_days > 0` get a 503 until a fetch brings clean past days. Its `Retry-After` (W26) is the seconds until the entry stops being fresh, which is when the next refresh can happen (at least 1); during a failure pause it is the seconds left in the pause. Past data rarely changes, so a bad past value can come back on every fetch until its date leaves the 92-day window (up to 92 days). The planner must handle a lasting 503 for `past_days > 0` (for example, ask the grower instead of suggesting). Reason: an add-on must not break what worked before it.
+- **Provider clock ahead around midnight.** If the provider already answers for tomorrow while it is still today at the point, today is now in the provider's past days and is served with its correct date, also with `past_days=0`. Before `past_days` this was a 503. It works only while the entry's past days are available; otherwise it is still a 503.
 
 ```mermaid
 sequenceDiagram
@@ -106,6 +117,7 @@ sequenceDiagram
 
 - **The cache is unbounded** (a known limitation: one entry per cell, no eviction). Requests with random coordinates could grow memory. Fine for the planner's use (a few plots); a limit is future work.
 - One worker process only (see Run).
+- **One bad past value hides all past days** of that cell for as long as fetches keep returning it, up to 92 days, until its date leaves the window. The forecast is not affected.
 
 ## NFR-2.3 measurement
 
@@ -113,7 +125,7 @@ Goal: a fresh forecast p95 of 100 ms or less at 10 requests per second, with **z
 
 Approach:
 
-- A local fake provider (own port) returns a valid 8-day Open-Meteo-shaped answer for any point and counts its calls. The service runs against it (`PROVIDER_BASE_URL` set by the runner), one worker, no reload.
+- A local fake provider (own port) returns a valid 100-day Open-Meteo-shaped answer (92 past days, then 8 forecast days) for any point and counts its calls. The service runs against it (`PROVIDER_BASE_URL` set by the runner), one worker, no reload.
 - Cache warm-up first: one request per point, all must be 200 with `stale: false`.
 - Then three Poisson runs at 10 requests per second (seeds 1-3). PASS only if all three pass; the load tool also checks generator lag.
 - Then the zero-calls check: the fake provider's call count must not change between the end of the warm-up and the end of the last run, otherwise the session fails.

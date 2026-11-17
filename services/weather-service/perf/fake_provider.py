@@ -1,7 +1,7 @@
 """Local fake of the Open-Meteo forecast endpoint for the NFR-2.3 measurement (design 5.11).
 
-GET /v1/forecast answers any point with a valid 8-day body starting at today in
-Asia/Jerusalem and counts the call; GET /calls returns {"calls": n}. Nothing here
+GET /v1/forecast answers any point with a valid 100-day body (92 past days, then
+today in Asia/Jerusalem and 7 more) and counts the call; GET /calls returns {"calls": n}. Nothing here
 contacts the real provider.
 
 Usage, from services/weather-service:
@@ -17,13 +17,15 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 TIMEZONE = "Asia/Jerusalem"
+PAST_DAYS = 92
 FORECAST_DAYS = 8
 ET0 = "et0_fao_evapotranspiration"
 RAIN = "precipitation_sum"
 
 
 def forecast_body(today: date) -> dict:
-    """Open-Meteo-shaped daily forecast: consecutive dates, units mm, finite values >= 0."""
+    """Open-Meteo-shaped daily answer: consecutive dates, units mm, finite values >= 0."""
+    first = today - timedelta(days=PAST_DAYS)
     return {
         "latitude": 31.25,
         "longitude": 34.75,
@@ -31,9 +33,14 @@ def forecast_body(today: date) -> dict:
         "timezone": TIMEZONE,
         "daily_units": {"time": "iso8601", ET0: "mm", RAIN: "mm"},
         "daily": {
-            "time": [(today + timedelta(days=i)).isoformat() for i in range(FORECAST_DAYS)],
-            ET0: [round(2.5 + i / 10, 2) for i in range(FORECAST_DAYS)],
-            RAIN: [0.0, 0.4, 2.0, 0.0, 5.5, 0.1, 0.0, 3.2],
+            "time": [
+                (first + timedelta(days=i)).isoformat()
+                for i in range(PAST_DAYS + FORECAST_DAYS)
+            ],
+            ET0: [round(3.0 + (i % 5) / 10, 2) for i in range(PAST_DAYS)]
+            + [round(2.5 + i / 10, 2) for i in range(FORECAST_DAYS)],
+            RAIN: [1.0 if i % 7 == 0 else 0.0 for i in range(PAST_DAYS)]
+            + [0.0, 0.4, 2.0, 0.0, 5.5, 0.1, 0.0, 3.2],
         },
     }
 
