@@ -181,3 +181,26 @@ local fake provider. **NFR-2.3: PASS** (`run_session.py` exit 0).
 - Run 3 had one short machine hiccup (p99 31.8 ms, max generator lag 97 ms).
   The run stayed valid, because its lag p99 was within the limit.
 - The progress display reached 100 %, and the phase log recorded every phase.
+
+### Session `seed1-30765f7` (after `past_days` and W27)
+
+Commit `30765f7`, 2026-11-17: the same session as above, after `past_days`
+and W27 (the fake provider now returns 100 days). **NFR-2.3: PASS**
+(`run_session.py` exit 0). Three runs and not one, because `run_session.py`
+has the seeds fixed (1, 2, 3).
+
+| | Value |
+| --- | ---: |
+| Worst p95 | 14.1 ms (run 2, point 31.40/34.60) |
+| Overall p95, seeds 1 / 2 / 3 | 13.3 / 13.9 / 13.3 ms |
+| Runs passing | 3 of 3 |
+| Errors | 0 in 8,870 requests |
+| Stalls / VM suspensions | 0 / 0 |
+| Generator lag p99 | <= 4.1 ms in every run (limit 10 ms) |
+| Provider calls | 3 during the cache warm-up, **0** during the runs |
+
+- About 3.5 ms higher than the official `8e96a2a` session. Runs from
+  different days on a laptop are not comparable in absolute terms, and no
+  back-to-back comparison was done. Both pass with a large margin.
+- The service log of the session is empty: no "past days limited" line (all
+  92 fake past days are valid) and no per-request lines.
