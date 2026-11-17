@@ -19,6 +19,8 @@ class ForecastOut(BaseModel):
     fetched_at: datetime
     stale: bool
     days: list[DayOut]
+    # Only when the query has past_days > 0 (W27); left out of the JSON otherwise.
+    past_days_returned: int | None = None
 
     @field_serializer("fetched_at")
     def _utc_seconds_z(self, value: datetime) -> str:

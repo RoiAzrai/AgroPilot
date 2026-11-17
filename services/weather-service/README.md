@@ -14,6 +14,14 @@ uv run uvicorn main:app --host 127.0.0.1 --port 8001
 uv run pytest
 ```
 
+Logs: the service's own loggers (`provider`, `forecasts`, `main`) write INFO and above to stderr, set up in `main.py` (no setting for it):
+
+```
+2026-11-17 14:30:22,000 INFO provider: past days limited: 67 of 92 available, data starts 2026-09-11 (first missing: 2026-09-10, et0_fao_evapotranspiration and precipitation_sum)
+```
+
+uvicorn's own loggers (`uvicorn`, `uvicorn.error`, `uvicorn.access`) are left to uvicorn and its `--log-level`.
+
 Run **one worker process** (no `--workers`, no multiple replicas). The cache, the single-flight and the failure pause live in the memory of the process. With several workers each would call the provider on its own and the pause would not be shared.
 
 ## Settings
@@ -50,7 +58,7 @@ Cost: Open-Meteo documents that requests with more than 7 days of data count as 
 
 ### Why negative values are rejected, and the risk
 
-Neither rain nor ET0 can physically be below zero, so a negative value is treated as bad provider data, like `null` or a non-number. In one of the 8 forecast days it is a provider failure, like a wrong unit or a wrong length; in a past day it makes the past days unavailable (see Past days). A real `0.0` is valid. The risk: daily ET0 can, rarely, come out slightly negative on cold, humid nights (condensation). If that happens in a forecast day, the cell falls back to the stale forecast or to 503, instead of serving that value. In a past day it only marks the past days unavailable (see Past days); the forecast is still served.
+Neither rain nor ET0 can physically be below zero, so a negative value is treated as bad provider data, like `null` or a non-number. In one of the 8 forecast days it is a provider failure, like a wrong unit or a wrong length; in a past day it makes that day and every older one unavailable (see Past days). A real `0.0` is valid. The risk: daily ET0 can, rarely, come out slightly negative on cold, humid nights (condensation). If that happens in a forecast day, the cell falls back to the stale forecast or to 503, instead of serving that value. In a past day it only shortens the past days that can be served (see Past days); the forecast is still served.
 
 ### Why `precipitation_sum` and not `rain_sum`
 
@@ -62,20 +70,32 @@ Neither rain nor ET0 can physically be below zero, so a negative value is treate
 - **Stale** (up to 24 h, `FORECAST_MAX_STALE_SECONDS`): served with `"stale": true` and its original `fetched_at` when a refresh fails. Irrigation decisions are daily. After a day the forecast may miss a change such as new rain, and a plan built on it could water a field that rain already watered, or skip one that needs water. Older than 24 h: `503 UNAVAILABLE`, never the old forecast. (The service asks for 8 forecast days, so a 24 h old forecast still has 7 full days, except across a DST change, when two days can drop and `days=7` is a 503. It also still has 93 past days, so `past_days=92` keeps working.)
 - **One refresh deadline** (`REFRESH_DEADLINE_SECONDS`, 5 s) bounds all attempts and backoffs of one refresh, and requests waiting on the same refresh (single-flight) wait no longer. The planner's timeout will be set above it, so a stale forecast or a 503 always arrives in time.
 - **The pause is a deliberate deviation from the letter of FR-2.6**, which reads as "every request retries twice, then serves stale". After a failed refresh of a cell (all attempts failed or the deadline ran out), for `FAILURE_PAUSE_SECONDS` (60 s) requests for that cell get the stale forecast at once, or a 503 if there is none usable, without calling the provider. Reason: the planner has its own timeout. If every request waited for three attempts while the provider is down, the planner would give up first and FR-2.13 (a stale forecast still gives a plan) would break. After the pause, one request tries again.
-- **`Retry-After`** of a 503 during the pause is the seconds left in it (rounded up, at least 1), so right after a failure it is 60. Outside a pause it is `RETRY_AFTER_SECONDS` (5), except for a 503 because the past days are unavailable (see Past days).
+- **`Retry-After`** of a 503 during the pause is the seconds left in it (rounded up, at least 1), so right after a failure it is 60. Outside a pause it is `RETRY_AFTER_SECONDS` (5). Missing past days never give a 503 (see Past days).
 - **A bug never starts the pause.** Only provider failure or a deadline starts it. Any other exception stays a 500 on every request, so a bug is not hidden as an outage.
-- **The whole window must be there.** The served days are the point's local today minus `past_days` through local today plus `days - 1`, every date present and in order. If one is missing (for example fewer than `days` forecast days remain), the answer is a 503 with `RETRY_AFTER_SECONDS` (or the seconds left in a pause) that starts no pause and heals by itself. Never padded, never shifted.
+- **The whole window must be there.** The served days are the past days the entry holds (up to `past_days`, ending yesterday; see Past days) and then local today through local today plus `days - 1`, every date present and in order. If one of the days from today on is missing (for example fewer than `days` forecast days remain), the answer is a 503 with `RETRY_AFTER_SECONDS` (or the seconds left in a pause) that starts no pause and heals by itself. Never padded, never shifted.
 
-Decisions: `docs/judgment-log.md`, entries 32-38.
+Decisions: `docs/judgment-log.md`, entries 32-39.
 
 ## Past days (`past_days`)
 
-`past_days=N` adds the N days before today, from the same cache entry: `days` then runs from today minus N to today plus `days - 1`, ordered by date. The response shape does not change. `past_days=0` (the default) gives the response the service gave before `past_days` existed, with one exception: the provider-clock case below. Like `days`, `past_days` accepts the loose integer forms pydantic accepts, for example `3.0`.
+`past_days=N` adds up to N days before today, from the same cache entry: `days` then runs from the first past day returned to today plus `days - 1`, ordered by date. With `past_days > 0` the response has one more field, `past_days_returned`: how many of `days` are past days (it can be fewer than N, also 0). Without `past_days`, or with `past_days=0` (the default), the field is not there and the response is the one the service gave before `past_days` existed, with one exception: the provider-clock case below. Like `days`, `past_days` accepts the loose integer forms pydantic accepts, for example `3.0`.
+
+```json
+{"lat": 31.25, "lon": 34.79, "source": "open-meteo", "fetched_at": "2026-11-17T06:00:00Z",
+ "stale": false, "past_days_returned": 2,
+ "days": [{"date": "2026-11-15", "et0_mm": 2.1, "rain_mm": 0.0},
+          {"date": "2026-11-16", "et0_mm": 2.4, "rain_mm": 0.0},
+          {"date": "2026-11-17", "et0_mm": 2.2, "rain_mm": 0.0}]}
+```
+
+(`past_days=2&days=1`; the values are an example.)
 
 - **A deliberate deviation from FR-2.3**, which says the forecast starts today. Reason: the planner suggests the soil bucket level at the start of a plan from the date of the grower's last irrigation ("suggest and confirm"), and for that it needs the ET0 and rain of the days since then. Judgment log 38.
 - **One cache entry per cell holds both parts.** Every fetch asks for 92 past days and 8 forecast days; freshness, single-flight, the pause, stale answers and the 24 h rule apply to the entry as a whole.
-- **A bad past value does not break the forecast.** Wrong length, dates, units, fields or time zone anywhere is still a provider failure. A `null` or invalid value in a forecast day is still a provider failure. A `null` or invalid value in a past day only marks the past days of that entry unavailable: they are never served, one warning is logged when the entry is parsed (not one per request), and it is not a provider failure (no retry, no pause, no stale fallback). Requests with `past_days=0` are not affected (except the provider-clock case below); requests with `past_days > 0` get a 503 until a fetch brings clean past days. Its `Retry-After` (W26) is the seconds until the entry stops being fresh, which is when the next refresh can happen (at least 1); during a failure pause it is the seconds left in the pause. Past data rarely changes, so a bad past value can come back on every fetch until its date leaves the 92-day window (up to 92 days). The planner must handle a lasting 503 for `past_days > 0` (for example, ask the grower instead of suggesting). Reason: an add-on must not break what worked before it.
-- **Provider clock ahead around midnight.** If the provider already answers for tomorrow while it is still today at the point, today is now in the provider's past days and is served with its correct date, also with `past_days=0`. Before `past_days` this was a 503. It works only while the entry's past days are available; otherwise it is still a 503.
+- **Open-Meteo does not have all 92 past days.** A real check on 2026-11-17 (lat 31.25, lon 34.75, `past_days=92`, `forecast_days=8`) answered 200 in 403 ms with 100 days, but the 25 oldest (2026-08-17 .. 2026-09-10) were `null` in both ET0 and rain. From 2026-09-11 on every value was valid, so only 67 past days really existed.
+- **The service serves the past days that exist (W27).** Wrong length, dates, units, fields or time zone anywhere is still a provider failure, and so is a `null` or invalid value in a forecast day. A past day is valid only when both its ET0 and its rain are valid numbers. The available past is the run of valid past days that ends with the provider's yesterday: counting back from yesterday, the first invalid day and every day older than it are dropped and never served. If yesterday itself is invalid, there are no past days. This is not a provider failure (no retry, no pause, no stale fallback), and it never gives a 503: a request gets the past days it asked for that are available, then the forecast days, with status 200 and `past_days_returned` saying how many past days came back. Never a made-up day. One INFO line is logged per stored entry when the past is limited (`past days limited: 67 of 92 available, data starts 2026-09-11 (first missing: 2026-09-10, et0_fao_evapotranspiration and precipitation_sum)`, or `no past days available (first missing: <date>, <field>)` when yesterday is invalid); a request that gets fewer past days than it asked for logs at DEBUG only. Reason: the service reports facts, and the planner decides what to do with fewer days (judgment log 39). This replaces the earlier rule (W23 for the past, W26): one bad past value used to hide all past days and give `past_days > 0` a 503.
+- **A stale entry after midnight** has one more past day: the former today is now yesterday, it is valid forecast data, and it counts in the run.
+- **Provider clock ahead around midnight.** If the provider already answers for tomorrow while it is still today at the point, today is now in the provider's past days and is served with its correct date, also with `past_days=0`. Before `past_days` this was a 503. It works only while the provider's yesterday (the point's today) is valid; otherwise local today is missing and the answer is still a 503.
 
 ```mermaid
 sequenceDiagram
@@ -117,7 +137,7 @@ sequenceDiagram
 
 - **The cache is unbounded** (a known limitation: one entry per cell, no eviction). Requests with random coordinates could grow memory. Fine for the planner's use (a few plots); a limit is future work.
 - One worker process only (see Run).
-- **One bad past value hides all past days** of that cell for as long as fetches keep returning it, up to 92 days, until its date leaves the window. The forecast is not affected.
+- **One bad past day hides every older day** of that cell for as long as fetches keep returning it, up to 92 days, until its date leaves the window. The days after it, and the forecast, are still served, and `past_days_returned` says how many past days came back.
 
 ## NFR-2.3 measurement
 
@@ -125,7 +145,7 @@ Goal: a fresh forecast p95 of 100 ms or less at 10 requests per second, with **z
 
 Approach:
 
-- A local fake provider (own port) returns a valid 100-day Open-Meteo-shaped answer (92 past days, then 8 forecast days) for any point and counts its calls. The service runs against it (`PROVIDER_BASE_URL` set by the runner), one worker, no reload.
+- A local fake provider (own port) returns a valid 100-day Open-Meteo-shaped answer (92 past days, then 8 forecast days) for any point and counts its calls. All 92 past days are valid, unlike the real provider (see Past days). That is fine for NFR-2.3: the measured requests have no `past_days`, and the number of stored past days does not change how a fresh answer is served. The service runs against it (`PROVIDER_BASE_URL` set by the runner), one worker, no reload.
 - Cache warm-up first: one request per point, all must be 200 with `stale: false`.
 - Then three Poisson runs at 10 requests per second (seeds 1-3). PASS only if all three pass; the load tool also checks generator lag.
 - Then the zero-calls check: the fake provider's call count must not change between the end of the warm-up and the end of the last run, otherwise the session fails.
@@ -137,7 +157,7 @@ Command, from `services/weather-service`:
 uv run python perf/run_session.py --prefix official
 ```
 
-Options: `--warmup` and `--duration` (load warm-up and measurement seconds). Results go to `perf/results/` (not committed), and an existing prefix is never overwritten.
+Options: `--warmup` and `--duration` (load warm-up and measurement seconds). The runner starts uvicorn with `--log-level warning`; that quiets uvicorn's own loggers only, not the service's INFO lines (see Run). The fake provider has all 92 past days, so no "past days limited" line is logged during a measurement. Results go to `perf/results/` (not committed), and an existing prefix is never overwritten.
 
 ## Results (NFR-2.3)
 

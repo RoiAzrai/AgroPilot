@@ -1,3 +1,5 @@
+import logging
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -12,6 +14,35 @@ from errors import register_error_handlers
 from forecasts import ForecastCache
 from models import DayOut, ForecastOut
 from provider import PAST_DAYS, SOURCE, fetch_forecast
+
+SERVICE_LOGGERS = ("provider", "forecasts", "main")
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+
+
+class _StderrHandler(logging.StreamHandler):
+    """Writes to the current sys.stderr, looked up on every record."""
+
+    @property
+    def stream(self):
+        return sys.stderr
+
+    @stream.setter
+    def stream(self, value) -> None:
+        pass
+
+
+def configure_logging() -> None:
+    """The service's own loggers at INFO to stderr. uvicorn's loggers are not touched."""
+    for name in SERVICE_LOGGERS:
+        logger = logging.getLogger(name)
+        logger.setLevel(logging.INFO)
+        if not logger.handlers:
+            handler = _StderrHandler()
+            handler.setFormatter(logging.Formatter(LOG_FORMAT))
+            logger.addHandler(handler)
+
+
+configure_logging()
 
 
 def make_client(settings: Settings) -> httpx.AsyncClient:
@@ -46,7 +77,7 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/v1/forecast", response_model=ForecastOut)
+@app.get("/v1/forecast", response_model=ForecastOut, response_model_exclude_none=True)
 async def forecast(
     request: Request,
     lat: Annotated[float, Query(ge=-90, le=90, allow_inf_nan=False)],
@@ -62,4 +93,5 @@ async def forecast(
         fetched_at=answer.fetched_at,
         stale=answer.stale,
         days=[DayOut(date=d.date, et0_mm=d.et0_mm, rain_mm=d.rain_mm) for d in answer.days],
+        past_days_returned=answer.past_days_returned if past_days else None,
     )

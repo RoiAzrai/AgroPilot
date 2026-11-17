@@ -27,6 +27,7 @@ class Answer:
     days: list[Day]
     fetched_at: datetime
     stale: bool
+    past_days_returned: int = 0  # how many of `days` are before local today (W27)
 
 
 class Unavailable(Exception):
@@ -141,14 +142,6 @@ class ForecastCache:
         logger.warning("no usable forecast for cell %s: %s", cell, reason)
         raise Unavailable(retry_after)
 
-    def _past_retry_after(self, cell: Cell, forecast: Forecast, now: datetime) -> int:
-        """W26: the seconds left in a pause, else until the entry stops being fresh
-        (its next refresh); rounded up, at least 1."""
-        if self._paused(cell, now):
-            return self._retry_after(cell, now)
-        left = self._settings.forecast_fresh_seconds - self._age(forecast, now)
-        return max(math.ceil(left), 1)
-
     @staticmethod
     def _age(forecast: Forecast, now: datetime) -> float:
         return (now - forecast.fetched_at).total_seconds()
@@ -163,22 +156,25 @@ class ForecastCache:
         stale: bool,
         retry_after: int | None = None,
     ) -> Answer:
-        """The window (local today - past_days) .. (local today + days - 1), every
-        date present and in order, or Unavailable. Never pads or shifts a day."""
-        if past_days and not forecast.past_available:
-            # Not a provider failure (W23), so no pause. The provider logged the
-            # warning once when it parsed this entry; per request only debug.
-            logger.debug("past days unavailable for cell %s; past_days=%d", cell, past_days)
-            raise Unavailable(self._past_retry_after(cell, forecast, now))
+        """Up to `past_days` days before local today that the entry holds (W27: it
+        may hold fewer), then local today .. today + days - 1. Every date present
+        and in order, or Unavailable. Never pads or shifts a day."""
         today = now.astimezone(ZoneInfo(forecast.timezone_name)).date()
-        first = today - timedelta(days=past_days)
-        window = [d for d in forecast.days if d.date >= first][: past_days + days]
-        expected = [first + timedelta(days=i) for i in range(past_days + days)]
+        window = [d for d in forecast.days if d.date >= today - timedelta(days=past_days)]
+        returned = sum(1 for d in window if d.date < today)
+        window = window[: returned + days]
+        first = today - timedelta(days=returned)
+        expected = [first + timedelta(days=i) for i in range(returned + days)]
+        if returned < past_days:
+            # Not a failure (W27): the provider logged the limit once per entry.
+            logger.debug("cell %s: %d of %d past days available", cell, returned, past_days)
         if [d.date for d in window] != expected:
             logger.warning(
-                "forecast does not cover %d past days, local today and %d days", past_days, days
+                "forecast does not cover %d past days, local today and %d days", returned, days
             )
             if retry_after is None:
                 retry_after = self._settings.retry_after_seconds
             raise Unavailable(retry_after)
-        return Answer(days=window, fetched_at=forecast.fetched_at, stale=stale)
+        return Answer(
+            days=window, fetched_at=forecast.fetched_at, stale=stale, past_days_returned=returned
+        )

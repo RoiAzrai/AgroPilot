@@ -109,6 +109,12 @@ unavailable, not a provider failure (5.5); W26 the `Retry-After` of a 503
 because the past is unavailable is the seconds until the entry stops being
 fresh (at least 1), or the seconds left in a failure pause.
 
+*Update 17.11 (W27; judgment log 39):* a real check found the 25 oldest of
+the 92 past days `null`. The past-related parts of W23 and W26 are
+**superseded**: an invalid past day drops itself and every older day, the
+rest is served, and missing past days never give a 503. With `past_days > 0`
+the response adds `past_days_returned` (5.3, 5.5, 5.7, 5.8).
+
 ### 5.1 Layout
 
 ```
@@ -182,9 +188,13 @@ Startup validation (clear `RuntimeError`, service does not start):
     point.
   - `fetched_at`: when the service received the provider response (UTC,
     seconds, `Z`). For a stale answer, the original fetch time.
-  - `days`: exactly `past_days + days` entries, consecutive dates, starting
-    at the point's local today − `past_days` (5.7; with the default
+  - `days`: `past_days_returned + days` entries, consecutive dates, starting
+    at the point's local today − `past_days_returned` (5.7; with the default
     `past_days=0`, at local today).
+  - `past_days_returned` *(W27, update 17.11)*: only when the query has
+    `past_days > 0`: how many past days are in `days` (0..`past_days`; fewer
+    when the provider has fewer, 5.5). Without `past_days`, or with 0, the
+    field is absent and the body is exactly the shape above.
   - `source`: a constant of the provider module.
 - `GET /health` -> `200 {"status": "ok"}`. Never calls the provider.
 - Unknown route 404 `NOT_FOUND`, wrong method 405 `VALIDATION`, unexpected
@@ -205,7 +215,8 @@ Startup validation (clear `RuntimeError`, service does not start):
 
 *Update 17.11 (past_days): the request also asks for 92 past days, the
 response has 100 days, and a bad value in a past day no longer fails the
-attempt (W22, W23; judgment log 38).*
+attempt (W22, W23; judgment log 38). Past-day handling updated by W27
+(judgment log 39), below.*
 
 Request: `latitude`, `longitude` (cell center), `daily=et0_fao_evapotranspiration,precipitation_sum`,
 `forecast_days=8`, `past_days=92`, `timezone=auto`, plus `apikey` when set.
@@ -225,13 +236,23 @@ is a provider failure (retry, then 5.6):
   too (physically impossible for both variables).
 - A real `0.0` is valid and kept as is.
 
-A value that fails the number checks in one of the 92 **past** days does not
+~~A value that fails the number checks in one of the 92 **past** days does not
 fail the attempt (W23): the past days of that entry are dropped and marked
-unavailable, one warning is logged, and the forecast days are kept.
+unavailable, one warning is logged, and the forecast days are kept.~~
+*Superseded by W27 (update 17.11, judgment log 39):* a past day is valid only
+when both its values pass the number checks. Counting back from the last past
+day (the provider's yesterday), the first invalid day and every older day are
+dropped; the valid run that ends yesterday is kept (empty if yesterday is
+invalid). Not a provider failure. One INFO line per parsed entry when the run
+is short: `past days limited: <k> of 92 available, data starts <date> (first
+missing: <date>, <field(s)>)`, or `no past days available (first missing:
+<date>, <field(s)>)` when k = 0. The real check of 2026-11-17 kept 67 of 92.
+`main.py` sets the service's own loggers (`provider`, `forecasts`, `main`) to
+INFO with a stderr handler (timestamp, level, logger name), so the line is
+visible under uvicorn; uvicorn's loggers are not touched. No setting.
 
-Result: a provider-neutral `Forecast(days=[Day(date, et0_mm, rain_mm)] * 100
-(or * 8 when the past is unavailable), fetched_at, timezone_name,
-past_available)`. Open-Meteo documents that requests with more than 7 days
+Result: a provider-neutral `Forecast(days=[Day(date, et0_mm, rain_mm)] * (k
++ 8), fetched_at, timezone_name)`, where k (0..92) is the kept past run. Open-Meteo documents that requests with more than 7 days
 of data count as more than one call (example from the docs: 4 weeks = 3.0
 calls). Conservative upper bound: ~14 calls per 100-day fetch, ~112 calls a
 day per cell at one refresh per 3 h, far below the free limit of 10,000 a day. No Open-Meteo name leaves this module. Each
@@ -288,21 +309,24 @@ in the process memory. README states it.
 today (W20, W21; judgment log 38). This also replaces "starting at the
 point's local today" in 5.3 when `past_days > 0`.*
 
-- Window = local today − `past_days` .. local today + `days` − 1. Every date
-  of the window must be in the entry, in order; otherwise `503 UNAVAILABLE`
-  (`Retry-After` as in 5.6 step 5). This replaces the rule below that the
-  first remaining day must be today. With `past_days=0` the two are the same,
-  except when the provider's clock is ahead (below).
-- `past_days > 0` and the entry's past is unavailable (5.5): `503
-  UNAVAILABLE`. `Retry-After` (W26): the seconds until the entry stops being
-  fresh (its next refresh), rounded up, at least 1; during a failure pause,
-  the seconds left in it. It starts no pause and logs at debug level only
-  (the warning was logged once, at parse). `past_days=0` is not affected.
+- Window *(W27)* = the entry's days from local today − `past_days` up to
+  yesterday (r of them, 0..`past_days`: fewer when the entry holds fewer,
+  5.5), then local today .. local today + `days` − 1. Every date of the
+  window must be in the entry, in order; otherwise `503 UNAVAILABLE`
+  (`Retry-After` as in 5.6 step 5). Missing past days are not a gap: r is
+  just smaller, reported as `past_days_returned` (5.3), logged at debug level
+  only. This replaces the rule below that the first remaining day must be
+  today. With `past_days=0` the two are the same, except when the provider's
+  clock is ahead (below).
+- ~~`past_days > 0` and the entry's past is unavailable (5.5): `503
+  UNAVAILABLE`, `Retry-After` per W26.~~ *Superseded by W27:* no 503 for
+  missing past days; W26 no longer applies to the past.
 - Provider clock ahead around midnight: local today is in the provider's past
   days and is served with its correct date (before: 503), also with
-  `past_days=0`. Accepted. Only while the past is available; without it the
-  entry starts at the provider's today and the answer is still a 503.
-- A 24 h old entry still has 93 past days, so `past_days=92` keeps working.
+  `past_days=0`. Accepted. Only while the provider's yesterday (local today)
+  is valid; otherwise local today is missing and the answer is still a 503.
+- A 24 h old entry has one more past day: the former today counts in the run,
+  so with the full 92 it has 93 and `past_days=92` keeps working.
 
 Original rules (still true for `past_days=0`, except the provider-clock case
 above, where the 503 test below now applies only to an entry without past days):
@@ -330,7 +354,7 @@ above, where the 503 test below now applies only to an entry without past days):
 | Bad or missing `lat`/`lon`/`days`, bad `past_days` (not an integer 0..92) | 422 | `VALIDATION` |
 | Provider failed / paused and no forecast <= 24 h | 503 + `Retry-After` | `UNAVAILABLE` |
 | A day of the requested window missing (e.g. fewer than `days` future days left) | 503 + `Retry-After` | `UNAVAILABLE` |
-| `past_days > 0` and the entry's past days are unavailable (update 17.11) | 503 + `Retry-After` until the next refresh, or left in the pause (W26) | `UNAVAILABLE` |
+| ~~`past_days > 0` and the entry's past days are unavailable~~ (superseded by W27: 200 with fewer past days, `past_days_returned`) | ~~503~~ | ~~`UNAVAILABLE`~~ |
 | Unknown route | 404 | `NOT_FOUND` |
 | Wrong method | 405 | `VALIDATION` |
 | Unexpected exception | 500, no details | `UNAVAILABLE` |
@@ -399,7 +423,9 @@ Open-Meteo.
 - `perf/fake_provider.py`: a local HTTP server on its own port that returns a
   valid 100-day (92 past + 8 forecast days) Open-Meteo-shaped response for
   any point and counts the calls
-  it receives (readable by the runner).
+  it receives (readable by the runner). All 92 past days are valid, unlike
+  the real provider (W27); fine for NFR-2.3, whose requests have no
+  `past_days`.
 - The service runs with `PROVIDER_BASE_URL` pointing at the fake provider,
   set explicitly in the service's environment by the runner (environment
   wins over `.env`), one worker, no reload.

@@ -203,7 +203,7 @@ async def test_cells_are_independent():
     assert fetch.cells == [(1, 1), (2, 2)]
 
 
-# --- past_days (W20-W23) ---
+# --- past_days (W20-W22, W27) ---
 
 TODAY = date(2026, 11, 15)
 
@@ -213,9 +213,9 @@ def with_past(at=T0, past=92, today=TODAY, **kw):
     return make_forecast(today - timedelta(days=past), at, n=past + 8, **kw)
 
 
-def past_unavailable(at=T0):
-    fc = good(at)
-    return Forecast(fc.days, fc.fetched_at, fc.timezone_name, past_available=False)
+def no_past(at=T0):
+    """W27: yesterday was invalid, so the entry holds no past days at all."""
+    return good(at)
 
 
 @pytest.mark.anyio
@@ -226,6 +226,7 @@ async def test_past_days_window_starts_before_today():
     assert [d.date for d in a.days] == [TODAY + timedelta(days=i) for i in range(-3, 7)]
     assert a.days == list(fc.days[89:99])
     assert a.stale is False
+    assert a.past_days_returned == 3
 
 
 @pytest.mark.anyio
@@ -234,6 +235,7 @@ async def test_past_days_zero_is_the_forecast_only():
     cache, _, _ = setup([fc])
     a = await cache.get(CELL, 7, past_days=0)
     assert a.days == list(fc.days[92:99])
+    assert a.past_days_returned == 0
     assert a == await cache.get(CELL, 7)
 
 
@@ -248,69 +250,102 @@ async def test_day_old_stale_entry_still_serves_92_past_days():
     tomorrow = TODAY + timedelta(days=1)
     assert [d.date for d in a.days] == [tomorrow + timedelta(days=i) for i in range(-92, 7)]
     assert a.days == list(fc.days[1:100])
+    assert a.past_days_returned == 92
+
+
+def short_forecast(at=T0, past=3):
+    """`past` days before today, then only 6 days from today: day 7 is missing."""
+    return make_forecast(TODAY - timedelta(days=past), at, n=past + 6)
 
 
 @pytest.mark.anyio
-async def test_missing_day_in_window_is_unavailable():
-    cache, _, _ = setup([with_past(past=3)])
+async def test_missing_forecast_day_in_window_is_unavailable():
+    cache, _, _ = setup([short_forecast()])
     with pytest.raises(Unavailable) as exc:
-        await cache.get(CELL, 7, past_days=4)
+        await cache.get(CELL, 7, past_days=3)
     assert exc.value.retry_after == 5
 
 
 @pytest.mark.anyio
-async def test_missing_day_in_window_on_stale_path_keeps_retry_after():
-    cache, _, clock = setup([with_past(past=3), ProviderError("down")])
-    await cache.get(CELL, 7)
+async def test_missing_forecast_day_in_window_on_stale_path_keeps_retry_after():
+    cache, _, clock = setup([short_forecast(), ProviderError("down")])
+    await cache.get(CELL, 6)
     clock.advance(4 * 3600)
     with pytest.raises(Unavailable) as exc:
-        await cache.get(CELL, 7, past_days=4)
+        await cache.get(CELL, 7, past_days=3)
     assert exc.value.retry_after == 60
 
 
 @pytest.mark.anyio
-async def test_past_unavailable_with_past_days_is_unavailable():
-    # W26: Retry-After = seconds until the entry stops being fresh (its next refresh).
-    cache, _, clock = setup([past_unavailable()])
-    with pytest.raises(Unavailable) as exc:
-        await cache.get(CELL, 7, past_days=1)
-    assert exc.value.retry_after == 10800
-    clock.advance(1000)
-    with pytest.raises(Unavailable) as exc:
-        await cache.get(CELL, 7, past_days=1)
-    assert exc.value.retry_after == 9800
+async def test_fewer_past_days_than_asked_serves_the_ones_that_exist():
+    fc = with_past(past=67)
+    cache, fetch, _ = setup([fc])
+    a = await cache.get(CELL, 7, past_days=3)
+    assert a.past_days_returned == 3
+    assert [d.date for d in a.days] == [TODAY + timedelta(days=i) for i in range(-3, 7)]
+    a = await cache.get(CELL, 7, past_days=80)
+    assert a.stale is False
+    assert a.past_days_returned == 67
+    assert [d.date for d in a.days] == [TODAY + timedelta(days=i) for i in range(-67, 7)]
+    assert a.days == list(fc.days[:74])
+    assert fetch.calls == 1
 
 
 @pytest.mark.anyio
-async def test_past_unavailable_retry_after_rounds_up_and_is_at_least_1():
-    cache, _, clock = setup([past_unavailable()])
+async def test_no_past_days_available_is_a_normal_answer():
+    fc = no_past()
+    cache, fetch, _ = setup([fc])
+    a = await cache.get(CELL, 7, past_days=5)
+    assert a.stale is False
+    assert a.past_days_returned == 0
+    assert a.days == list(fc.days[:7])
+    assert fetch.calls == 1
+
+
+@pytest.mark.anyio
+async def test_stale_entry_after_midnight_counts_former_today_as_past():
+    fc = with_past(past=67)
+    cache, _, clock = setup([fc, ProviderError("down")])
     await cache.get(CELL, 7)
+    clock.advance(86400)  # local today is 16 Nov; 15 Nov is now a past day
+    a = await cache.get(CELL, 7, past_days=80)
+    assert a.stale is True
+    assert a.past_days_returned == 68
+    tomorrow = TODAY + timedelta(days=1)
+    assert [d.date for d in a.days] == [tomorrow + timedelta(days=i) for i in range(-68, 7)]
+
+
+@pytest.mark.anyio
+async def test_no_past_days_with_past_days_is_served_until_the_next_refresh():
+    # W27 (replaces W26 for the past): no 503, the entry keeps serving 0 past days.
+    cache, fetch, clock = setup([no_past()])
+    a = await cache.get(CELL, 7, past_days=1)
+    assert a.past_days_returned == 0
     clock.advance(10799.5)
-    with pytest.raises(Unavailable) as exc:
-        await cache.get(CELL, 7, past_days=1)
-    assert exc.value.retry_after == 1
+    a = await cache.get(CELL, 7, past_days=1)
+    assert a.past_days_returned == 0
+    assert len(a.days) == 7
+    assert fetch.calls == 1
 
 
 @pytest.mark.anyio
-async def test_past_unavailable_during_pause_uses_seconds_left_in_pause():
-    # W26: during a failure pause, the seconds left in it (design 5.6).
-    cache, fetch, clock = setup([past_unavailable(), ProviderError("down")])
+async def test_no_past_days_during_pause_serves_stale_forecast_days():
+    cache, fetch, clock = setup([no_past(), ProviderError("down")])
     await cache.get(CELL, 7)
     clock.advance(4 * 3600)
-    with pytest.raises(Unavailable) as exc:
-        await cache.get(CELL, 7, past_days=1)
-    assert exc.value.retry_after == 60
+    a = await cache.get(CELL, 7, past_days=1)
+    assert a.stale is True
+    assert a.past_days_returned == 0
     assert fetch.calls == 2
     clock.advance(20)
-    with pytest.raises(Unavailable) as exc:
-        await cache.get(CELL, 7, past_days=1)
-    assert exc.value.retry_after == 40
+    a = await cache.get(CELL, 7, past_days=1)
+    assert a.stale is True
     assert fetch.calls == 2
 
 
 @pytest.mark.anyio
-async def test_past_unavailable_does_not_affect_past_days_zero():
-    fc = past_unavailable()
+async def test_no_past_days_does_not_affect_past_days_zero():
+    fc = no_past()
     cache, fetch, _ = setup([fc])
     a = await cache.get(CELL, 7)
     assert a.days == list(fc.days[:7])
@@ -332,12 +367,11 @@ async def test_provider_clock_ahead_serves_today_from_past_part():
 
 
 @pytest.mark.anyio
-async def test_provider_clock_ahead_with_past_unavailable_is_unavailable():
+async def test_provider_clock_ahead_with_no_past_days_is_unavailable():
     # Q6 needs the past part: without it the entry starts at the provider's
     # today (16 Nov), so local today (15 Nov) is missing -> 503, as before past_days.
     now = datetime(2026, 11, 15, 21, 59, tzinfo=UTC)
     fc = make_forecast(TODAY + timedelta(days=1), now)
-    fc = Forecast(fc.days, fc.fetched_at, fc.timezone_name, past_available=False)
     cache, _, _ = setup([fc], start=now)
     with pytest.raises(Unavailable) as exc:
         await cache.get(CELL, 7)
@@ -348,7 +382,7 @@ async def test_provider_clock_ahead_with_past_unavailable_is_unavailable():
 @pytest.mark.anyio
 async def test_refresh_to_entry_without_past():
     later = T0 + timedelta(hours=4)
-    cache, fetch, clock = setup([with_past(), past_unavailable(later)])
+    cache, fetch, clock = setup([with_past(), no_past(later)])
     assert len((await cache.get(CELL, 7, past_days=1)).days) == 8
     clock.advance(4 * 3600)
     a = await cache.get(CELL, 7)
@@ -356,9 +390,9 @@ async def test_refresh_to_entry_without_past():
     assert a.stale is False
     assert a.fetched_at == later
     assert [d.date for d in a.days] == [TODAY + timedelta(days=i) for i in range(7)]
-    with pytest.raises(Unavailable) as exc:
-        await cache.get(CELL, 7, past_days=1)
-    assert exc.value.retry_after == 10800
+    a = await cache.get(CELL, 7, past_days=1)
+    assert a.past_days_returned == 0
+    assert [d.date for d in a.days] == [TODAY + timedelta(days=i) for i in range(7)]
 
 
 def _warnings(caplog):
@@ -366,28 +400,56 @@ def _warnings(caplog):
 
 
 @pytest.mark.anyio
-async def test_past_unavailable_503_logs_no_warning_per_request(caplog):
-    cache, _, _ = setup([past_unavailable()])
+async def test_fewer_past_days_than_asked_logs_debug_only(caplog):
+    cache, _, _ = setup([no_past()])
     await cache.get(CELL, 7)
     caplog.clear()
     caplog.set_level(logging.DEBUG)
+    caplog.set_level(logging.DEBUG, logger="forecasts")  # main.py sets it to INFO
     for _ in range(3):
-        with pytest.raises(Unavailable):
-            await cache.get(CELL, 7, past_days=1)
+        await cache.get(CELL, 7, past_days=1)
     assert _warnings(caplog) == []
+    debug = [r for r in caplog.records if r.name == "forecasts" and r.levelno == logging.DEBUG]
+    assert len(debug) == 3
 
 
 @pytest.mark.anyio
 async def test_stale_log_only_when_stale_answer_is_served(caplog):
-    cache, _, clock = setup([with_past(past=3), ProviderError("down")])
-    await cache.get(CELL, 7)
+    cache, _, clock = setup([short_forecast(), ProviderError("down")])
+    await cache.get(CELL, 6)
     clock.advance(4 * 3600)
     caplog.clear()
     with pytest.raises(Unavailable):
-        await cache.get(CELL, 7, past_days=4)
+        await cache.get(CELL, 7, past_days=3)
     assert not any("serving stale" in m for m in _warnings(caplog))
     assert any("no usable forecast" in m for m in _warnings(caplog))
     caplog.clear()
-    a = await cache.get(CELL, 7, past_days=3)
+    a = await cache.get(CELL, 6, past_days=3)
     assert a.stale is True
     assert any("serving stale" in m for m in _warnings(caplog))
+
+
+@pytest.mark.anyio
+async def test_provider_clock_ahead_with_limited_past():
+    # Q6 + W27: the provider answers for 16 Nov with 67 valid past days; local
+    # today (15 Nov) is its yesterday, so 66 past days are before local today.
+    now = datetime(2026, 11, 15, 21, 59, tzinfo=UTC)
+    fc = with_past(now, past=67, today=TODAY + timedelta(days=1))
+    cache, _, _ = setup([fc], start=now)
+    a = await cache.get(CELL, 7, past_days=80)
+    assert a.past_days_returned == 66
+    assert [d.date for d in a.days] == [TODAY + timedelta(days=i) for i in range(-66, 7)]
+    assert a.days == list(fc.days[:73])
+
+
+@pytest.mark.anyio
+async def test_stale_entry_after_midnight_with_no_past_returns_former_today():
+    fc = no_past()
+    cache, _, clock = setup([fc, ProviderError("down")])
+    await cache.get(CELL, 7)
+    clock.advance(86400)  # local today is 16 Nov; 15 Nov is the only past day
+    a = await cache.get(CELL, 7, past_days=5)
+    assert a.stale is True
+    assert a.past_days_returned == 1
+    assert a.days == list(fc.days[:8])
+    assert a.days[0].date == TODAY

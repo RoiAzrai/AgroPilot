@@ -600,3 +600,37 @@ and why.
   suggest a bucket level without the ET0 and rain since the last irrigation.
   An add-on must not break what worked before it: one bad value three months
   ago must not cost a grower today's plan.
+- **Superseded (17.11, entry 39):** the past-related parts of this entry (a
+  bad past value marks all past days unavailable, `past_days > 0` gets a 503,
+  and W26's `Retry-After` for it) are replaced by W27. The rest still holds.
+
+## 39. weather-service: serve the past days that exist (W27)
+- **Found:** a real Open-Meteo check on 2026-11-17 (lat 31.25, lon 34.75,
+  `past_days=92`, `forecast_days=8`) answered 200 in 403 ms with 100 days, but
+  the 25 oldest days (2026-08-17 .. 2026-09-10) were `null` in both ET0 and
+  rain; from 2026-09-11 on every value was valid. Only 67 past days really
+  exist. Under entry 38 (W23=B) the whole past was marked unavailable, so
+  `past_days=3` got a 503 although those 3 days existed.
+- **I decided (W27):** structural problems anywhere and any invalid value in
+  the 8 forecast days stay provider failures. A past day is valid only when
+  both ET0 and rain are valid numbers. The available past is the longest run
+  of valid past days that ends on the provider's yesterday; the first invalid
+  day counting back, and everything older, is dropped and never served. If
+  yesterday is invalid, there are no past days. Not a provider failure: no
+  retry, no pause, no stale fallback. `past_days=N` (0-92) returns the
+  requested past days that are available, contiguous and ending yesterday
+  (fewer than N, possibly 0), then the forecast days, with 200. When the query
+  has `past_days > 0` the response adds `past_days_returned`; without
+  `past_days`, or with 0, the response is unchanged. No 503 for missing past
+  days, so W26 no longer applies to the past; 503 stays for forecast failures
+  with the existing `Retry-After` rules. A stale entry after midnight counts
+  the former today as a past day. One INFO line per stored entry when the past
+  is limited; DEBUG per request that gets fewer past days than asked. The
+  service had no logging setup, so INFO from its own loggers was dropped under
+  uvicorn: `main.py` now sets `provider`, `forecasts` and `main` to INFO with a
+  stderr handler (timestamp, level, logger name), leaves uvicorn's loggers
+  alone, and adds no `.env` key.
+- **Why:** the service reports facts; the planner decides what to do with
+  fewer days (for example, ask the grower instead of suggesting a bucket
+  level). A 503 hid 67 good days because 25 older ones were missing, and
+  told the client nothing it could act on.

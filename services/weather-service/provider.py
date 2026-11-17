@@ -1,8 +1,9 @@
 """Open-Meteo response validation (design 5.5, FR-2.8).
 
 Only this module knows Open-Meteo field names. Anything doubtful raises
-ProviderError; we never return a number the provider did not give. A bad value
-in the past days (W23) drops the past part instead: those days are never served.
+ProviderError; we never return a number the provider did not give. In the past
+days (W27) an invalid day drops itself and every older day instead: only the run
+of valid days that ends yesterday is kept, and nothing older is ever served.
 """
 
 import logging
@@ -45,9 +46,6 @@ class Forecast:
     days: tuple[Day, ...]
     fetched_at: datetime
     timezone_name: str
-    # False when a past value was unusable (W23): `days` then holds only the
-    # forecast days, and no request with past_days > 0 is answered from it.
-    past_available: bool = True
 
 
 class ProviderError(Exception):
@@ -125,12 +123,41 @@ def parse_forecast(payload: object, fetched_at: datetime) -> Forecast:
 
     rows = list(zip(dates, et0s, rains))
     forecast_days = tuple(_day(*row) for row in rows[PAST_DAYS:])
-    try:
-        past_days = tuple(_day(*row) for row in rows[:PAST_DAYS])
-    except ProviderError as exc:
-        logger.warning("past days unavailable, only the forecast days are kept: %s", exc)
-        return Forecast(forecast_days, fetched_at, timezone_name, past_available=False)
-    return Forecast(past_days + forecast_days, fetched_at, timezone_name)
+    return Forecast(_past_run(rows[:PAST_DAYS]) + forecast_days, fetched_at, timezone_name)
+
+
+def _past_run(rows: list[tuple[date, object, object]]) -> tuple[Day, ...]:
+    """W27: the valid past days counted back from yesterday, up to the first
+    invalid one. Not a provider failure: one INFO line when the run is short."""
+    kept: list[Day] = []
+    for d, et0, rain in reversed(rows):
+        bad = _invalid_fields(et0, rain)
+        if bad:
+            fields = " and ".join(bad)
+            if not kept:
+                logger.info("no past days available (first missing: %s, %s)", d, fields)
+            else:
+                logger.info(
+                    "past days limited: %d of %d available, data starts %s (first missing: %s, %s)",
+                    len(kept),
+                    PAST_DAYS,
+                    d + timedelta(days=1),
+                    d,
+                    fields,
+                )
+            break
+        kept.append(_day(d, et0, rain))
+    return tuple(reversed(kept))
+
+
+def _invalid_fields(et0: object, rain: object) -> list[str]:
+    bad = []
+    for key, value in ((_ET0, et0), (_RAIN, rain)):
+        try:
+            _number(value, key)
+        except ProviderError:
+            bad.append(key)
+    return bad
 
 
 def _day(d: date, et0: object, rain: object) -> Day:

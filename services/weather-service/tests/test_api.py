@@ -1,5 +1,6 @@
 import logging
 import math
+import sys
 
 import httpx
 import pytest
@@ -7,7 +8,7 @@ from fastapi.testclient import TestClient
 
 import main
 from conftest import assert_problem
-from test_provider_validation import ET0, PAST, RAIN, valid_payload
+from test_provider_validation import ET0, PAST, RAIN, realistic_payload, valid_payload
 
 FORECAST = "/v1/forecast"
 POINT = {"lat": 31.25, "lon": 34.79}
@@ -187,7 +188,7 @@ def test_negative_zero_from_provider_served_as_zero(monkeypatch, clock):
     assert math.copysign(1, day["rain_mm"]) == 1
 
 
-# --- past_days (W20-W23) ---
+# --- past_days (W20-W22, W27) ---
 
 
 @pytest.mark.parametrize("value", ["-1", "93", "1.5", "", "nan", "abc"])
@@ -203,6 +204,7 @@ def test_past_days_zero_is_todays_response(client):
     zero = client.get(FORECAST, params={**POINT, "past_days": 0})
     assert without.status_code == zero.status_code == 200
     assert without.content == zero.content
+    assert set(zero.json()) == {"lat", "lon", "source", "fetched_at", "stale", "days"}
     assert [d["date"] for d in zero.json()["days"]] == [f"2026-11-{15 + i}" for i in range(7)]
 
 
@@ -211,7 +213,10 @@ def test_past_days_three_adds_three_days_before_today(client):
     response = client.get(FORECAST, params={**POINT, "past_days": 3})
     assert response.status_code == 200
     body = response.json()
-    assert set(body) == {"lat", "lon", "source", "fetched_at", "stale", "days"}
+    assert set(body) == {
+        "lat", "lon", "source", "fetched_at", "stale", "days", "past_days_returned"
+    }
+    assert body["past_days_returned"] == 3
     assert len(body["days"]) == 10
     for i, day in enumerate(body["days"]):
         assert set(day) == {"date", "et0_mm", "rain_mm"}
@@ -231,11 +236,12 @@ def test_stale_answer_with_past_days(client, fake_provider, clock):
     assert body["stale"] is True
     assert body["fetched_at"] == "2026-11-15T06:00:00Z"
     assert len(body["days"]) == 93
+    assert body["past_days_returned"] == 92
     assert body["days"][0]["date"] == "2026-08-15"
     assert body["days"][-1]["date"] == "2026-11-15"
 
 
-def test_unusable_past_value_gives_503_only_with_past_days(monkeypatch, clock):
+def test_unusable_oldest_past_value_still_serves_past_days(monkeypatch, clock):
     payload = valid_payload()
     payload["daily"][ET0][0] = None
     calls = []
@@ -252,8 +258,97 @@ def test_unusable_past_value_gives_503_only_with_past_days(monkeypatch, clock):
     assert forecast_only.status_code == 200
     assert forecast_only.json()["stale"] is False
     assert len(forecast_only.json()["days"]) == 7
-    assert_problem(with_past, 503, "UNAVAILABLE")
-    # W26: seconds until the entry's next refresh (fresh for 3 h, clock not moved).
-    assert with_past.headers["retry-after"] == "10800"
+    # W27: only the oldest past day is bad, so yesterday is served.
+    assert with_past.status_code == 200
+    assert with_past.json()["stale"] is False
+    assert [d["date"] for d in with_past.json()["days"]][:2] == ["2026-11-14", "2026-11-15"]
+    assert len(with_past.json()["days"]) == 8
+    assert with_past.json()["past_days_returned"] == 1
+    assert "past_days_returned" not in forecast_only.json()
     # Not a provider failure: one call, no retries, no pause.
     assert len(calls) == 1
+
+
+def realistic_client(monkeypatch):
+    monkeypatch.setattr(main, "make_client", lambda settings: httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(
+            200, json=realistic_payload()))))
+    return TestClient(main.app)
+
+
+def test_realistic_payload_serves_the_67_past_days_that_exist(monkeypatch, clock):
+    # The real check: the 25 oldest of 92 past days were null. On 2026-11-17 the
+    # data started 2026-09-11; with the test's today (2026-11-15) that is 2026-09-09.
+    with realistic_client(monkeypatch) as test_client:
+        response = test_client.get(FORECAST, params={**POINT, "past_days": 80})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["stale"] is False
+    assert body["past_days_returned"] == 67
+    assert len(body["days"]) == 67 + 7
+    assert body["days"][0]["date"] == "2026-09-09"
+    assert body["days"][66]["date"] == "2026-11-14"
+    assert body["days"][67]["date"] == "2026-11-15"
+
+
+@pytest.mark.parametrize("past_days", [1, 3, 67])
+def test_past_days_returned_equals_asked_when_available(monkeypatch, clock, past_days):
+    with realistic_client(monkeypatch) as test_client:
+        body = test_client.get(FORECAST, params={**POINT, "past_days": past_days}).json()
+    assert body["past_days_returned"] == past_days
+    assert len(body["days"]) == past_days + 7
+
+
+@pytest.mark.parametrize("query", [{}, {"past_days": 0}])
+def test_no_past_days_returned_field_without_past_days(monkeypatch, clock, query):
+    with realistic_client(monkeypatch) as test_client:
+        body = test_client.get(FORECAST, params={**POINT, **query}).json()
+    assert set(body) == {"lat", "lon", "source", "fetched_at", "stale", "days"}
+    assert body["days"][0]["date"] == "2026-11-15"
+
+
+def test_past_days_with_no_past_at_all_is_200_with_zero(monkeypatch, clock):
+    payload = valid_payload()
+    payload["daily"][ET0][PAST - 1] = None  # yesterday invalid -> no past days
+    monkeypatch.setattr(main, "make_client", lambda settings: httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=payload))))
+    with TestClient(main.app) as test_client:
+        response = test_client.get(FORECAST, params={**POINT, "past_days": 5})
+    assert response.status_code == 200
+    body = response.json()
+    assert "past_days_returned" in body
+    assert body["past_days_returned"] == 0
+    assert [d["date"] for d in body["days"]] == [f"2026-11-{15 + i}" for i in range(7)]
+
+
+SERVICE_LOGGERS = ("provider", "forecasts", "main")
+
+
+def test_service_loggers_log_info_to_stderr():
+    for name in SERVICE_LOGGERS:
+        logger = logging.getLogger(name)
+        assert logger.level == logging.INFO
+        [handler] = logger.handlers
+        assert handler.stream is sys.stderr
+        assert handler.formatter._fmt == "%(asctime)s %(levelname)s %(name)s: %(message)s"
+
+
+def test_configure_logging_is_idempotent_and_leaves_uvicorn_alone():
+    uvicorn = {n: (logging.getLogger(n).level, list(logging.getLogger(n).handlers))
+               for n in ("uvicorn", "uvicorn.error", "uvicorn.access")}
+    main.configure_logging()
+    main.configure_logging()
+    for name in SERVICE_LOGGERS:
+        assert len(logging.getLogger(name).handlers) == 1
+    assert uvicorn == {n: (logging.getLogger(n).level, list(logging.getLogger(n).handlers))
+                       for n in ("uvicorn", "uvicorn.error", "uvicorn.access")}
+
+
+def test_past_days_limited_info_line_reaches_stderr(capsys):
+    from datetime import date, datetime, timezone
+
+    from provider import parse_forecast
+
+    parse_forecast(realistic_payload(date(2026, 11, 17)), datetime.now(timezone.utc))
+    err = capsys.readouterr().err
+    assert " INFO provider: past days limited: 67 of 92 available, data starts 2026-09-11 " in err

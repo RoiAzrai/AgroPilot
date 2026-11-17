@@ -32,7 +32,7 @@ def test_fake_provider_body_passes_strict_validation(provider_url):
     assert forecast.timezone_name == "Asia/Jerusalem"
     today = now.astimezone(ZoneInfo("Asia/Jerusalem")).date()
     assert len(forecast.days) == PAST_DAYS + FORECAST_DAYS
-    assert forecast.past_available is True
+    assert sum(d.date < today for d in forecast.days) == PAST_DAYS
     assert forecast.days[0].date == today - timedelta(days=PAST_DAYS)
     assert forecast.days[PAST_DAYS].date == today
 

@@ -34,12 +34,25 @@ def valid_payload(start: date = date(2026, 11, 15), tz: str = "Asia/Jerusalem") 
     }
 
 
+REAL_MISSING = 25  # the real check on 2026-11-17: the 25 oldest past days were null
+
+
+def realistic_payload(start: date = date(2026, 11, 15)) -> dict:
+    """Like the real Open-Meteo answer (W27): the 25 oldest past days are null in
+    both et0 and rain, so only the last 67 past days exist."""
+    p = valid_payload(start)
+    for i in range(REAL_MISSING):
+        p["daily"][ET0][i] = None
+        p["daily"][RAIN][i] = None
+    return p
+
+
 def test_valid_payload_parses():
     f = parse_forecast(valid_payload(), NOW)
     assert isinstance(f, Forecast)
     assert SOURCE == "open-meteo"
     assert len(f.days) == TOTAL
-    assert f.past_available is True
+    assert sum(d.date < date(2026, 11, 15) for d in f.days) == PAST
     assert f.timezone_name == "Asia/Jerusalem"
     assert f.fetched_at == NOW
     p = valid_payload()
@@ -184,20 +197,84 @@ PAST_VALUE_CASES = {
 }
 
 
+TODAY = date(2026, 11, 15)
+
+
+def past_dates(f: Forecast) -> list[date]:
+    return [d.date for d in f.days if d.date < TODAY]
+
+
 @pytest.mark.parametrize("name", list(PAST_VALUE_CASES))
-@pytest.mark.parametrize("index", [0, PAST - 1])
-def test_bad_past_value_parses_with_past_unavailable(name, index, caplog):
+@pytest.mark.parametrize("index", [0, 80, PAST - 1])
+def test_bad_past_value_drops_it_and_every_older_day(name, index):
     key, value = PAST_VALUE_CASES[name]
     p = valid_payload()
     p["daily"][key][index] = value
     f = parse_forecast(p, NOW)
-    assert f.past_available is False
-    # Past values are never kept: only today and the forecast days remain.
-    assert [d.date for d in f.days] == [date(2026, 11, 15) + timedelta(days=i) for i in range(8)]
-    assert f.days == parse_forecast(valid_payload(), NOW).days[PAST:]
-    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
-    assert len(warnings) == 1
-    assert "past" in warnings[0].getMessage()
+    kept = PAST - 1 - index
+    # Only the run after the bad day is kept, up to yesterday (W27).
+    assert past_dates(f) == [TODAY - timedelta(days=kept - i) for i in range(kept)]
+    assert f.days == parse_forecast(valid_payload(), NOW).days[index + 1 :]
+
+
+def test_realistic_payload_keeps_67_past_days():
+    f = parse_forecast(realistic_payload(date(2026, 11, 17)), NOW)
+    past = [d for d in f.days if d.date < date(2026, 11, 17)]
+    assert len(past) == 67
+    assert past[0].date == date(2026, 9, 11)
+    assert past[-1].date == date(2026, 11, 16)
+    assert len(f.days) == 67 + 8
+
+
+def test_null_only_in_rain_makes_the_past_day_invalid():
+    p = valid_payload()
+    p["daily"][RAIN][85] = None
+    f = parse_forecast(p, NOW)
+    assert len(past_dates(f)) == PAST - 1 - 85
+    assert past_dates(f)[0] == TODAY - timedelta(days=PAST - 1 - 85)
+
+
+def test_null_only_in_et0_makes_the_past_day_invalid():
+    p = valid_payload()
+    p["daily"][ET0][85] = None
+    assert len(past_dates(parse_forecast(p, NOW))) == PAST - 1 - 85
+
+
+def test_invalid_yesterday_leaves_no_past_days():
+    p = valid_payload()
+    p["daily"][ET0][PAST - 1] = None
+    f = parse_forecast(p, NOW)
+    assert past_dates(f) == []
+    assert [d.date for d in f.days] == [TODAY + timedelta(days=i) for i in range(8)]
+
+
+def test_limited_past_logs_one_info_line(caplog):
+    caplog.set_level("DEBUG", logger="provider")
+    parse_forecast(realistic_payload(date(2026, 11, 17)), NOW)
+    records = [r for r in caplog.records if r.name == "provider"]
+    assert len(records) == 1
+    assert records[0].levelname == "INFO"
+    assert records[0].getMessage() == (
+        "past days limited: 67 of 92 available, data starts 2026-09-11 "
+        "(first missing: 2026-09-10, et0_fao_evapotranspiration and precipitation_sum)"
+    )
+
+
+def test_limited_past_log_names_only_the_bad_field(caplog):
+    caplog.set_level("INFO", logger="provider")
+    p = valid_payload()
+    p["daily"][RAIN][PAST - 1] = None
+    parse_forecast(p, NOW)
+    [record] = [r for r in caplog.records if r.name == "provider"]
+    assert record.getMessage() == (
+        "no past days available (first missing: 2026-11-14, precipitation_sum)"
+    )
+
+
+def test_full_past_logs_nothing(caplog):
+    caplog.set_level("DEBUG", logger="provider")
+    parse_forecast(valid_payload(), NOW)
+    assert [r for r in caplog.records if r.name == "provider"] == []
 
 
 def test_bad_first_forecast_day_is_provider_error():
@@ -220,3 +297,13 @@ def test_bad_past_and_bad_forecast_value_is_provider_error():
     p["daily"][RAIN][PAST + 1] = None
     with pytest.raises(ProviderError):
         parse_forecast(p, NOW)
+
+
+def test_bad_past_and_bad_forecast_value_logs_no_info_line(caplog):
+    caplog.set_level("DEBUG", logger="provider")
+    p = valid_payload()
+    p["daily"][ET0][0] = None
+    p["daily"][RAIN][PAST + 1] = None
+    with pytest.raises(ProviderError):
+        parse_forecast(p, NOW)
+    assert [r for r in caplog.records if r.name == "provider"] == []
