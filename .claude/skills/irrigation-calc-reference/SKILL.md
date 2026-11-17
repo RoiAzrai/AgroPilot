@@ -80,9 +80,9 @@ bucket_mm = TAW - Dr_end                             # the bucket level reported
 ## Drip conversion
 
 ```
-litres      = round(I * area_m2)                                 # whole litres
+litres      = round(I * area_m2)                                 # whole litres, half up (I19)
 emitters    = area_m2 / (row_spacing_m * emitter_spacing_m)
-run_minutes = round(I * area_m2 / (emitters * flow_lph) * 60)    # whole minutes
+run_minutes = round(I * area_m2 / (emitters * flow_lph) * 60)    # whole minutes, half up (I20)
             = round(I * row_spacing_m * emitter_spacing_m / flow_lph * 60)   # area cancels out
 ```
 
@@ -114,6 +114,7 @@ suggestion = clamp(1 - Dr / TAW(today), 0, 1)
 
 - `422` when D is in the future, before planting, more than 92 days ago, or not a valid date.
 - Season ended → stage `"ended"`, no suggestion.
+- weather-service can return fewer past days than requested (`past_days_returned`). What to do then is in decisions.md (I22).
 - **Why:** without this the planner would assume a full bucket every day and keep postponing irrigation forever. The details are in decisions.md.
 
 ## Before saying the work is done
