@@ -1,4 +1,4 @@
-> Source: https://github.com/alonitac/OzVeruach26/blob/main/tasks/p2.md
+> Source: https://github.com/alonitac/OzVeruach26/blob/main/tasks/p2.md (fetched 2026-11-17, upstream commit 9411807)
 # P2 - Weather, planner, and the daily plan
 
 In this task AgroPilot answers the grower's real question:
@@ -144,7 +144,7 @@ Then turn what you learned into a knowledge skill, `irrigation-calc-reference` (
 ### Functional requirements
 
 - **FR-2.9** `GET /v1/plots/{id}/plan?days={days}` returns the irrigation plan of that plot for the next `days` days (1 to 7, default 7), starting today. The first day is today's recommendation.
-- **FR-2.10** For each day the plan has: `date`, `et0_mm`, `kc`, `need_mm`, `litres`, `run_minutes`, `stale`, and the bucket level at the end of the day. A day with no irrigation has `run_minutes: 0`.
+- **FR-2.10** For each day the plan has: `date`, `et0_mm`, `kc`, `litres`, `run_minutes`, `stale`, and the bucket level at the end of the day. A day with no irrigation has `run_minutes: 0`.
 - **FR-2.11** Every number in the plan is calculated as written in your skill, from the plot, its soil and its emitter, and the forecast for the plot's `lat`/`lon`.
 - **FR-2.12** Bad `days`: `422`, `code`: `VALIDATION`. Unknown plot: `404`, `code`: `NOT_FOUND`.
 - **FR-2.13** A stale forecast still gives a plan, with every affected day `stale: true`.
@@ -152,15 +152,24 @@ Then turn what you learned into a knowledge skill, `irrigation-calc-reference` (
 
 Design the exact JSON yourself, and add an example to the service README.
 
-### Non-functional requirements
-
-- **NFR-2.5** Accuracy: the check value in the [Definition of done](#definition-of-done), and your three hand-calculated cases, within 0.5%.
 
 ### Notes
 
 - Keep the code ordered
 - Every number in the plan comes from your engine. No AI model computes or adjusts irrigation numbers.
 - (Optional) Draw the flow as a Mermaid sequence diagram in the README: frontend, planner, registry, weather, and the failure branches.
+
+
+Let's see an example: a 1000 m² tomato plot at mid-season, ET0 = 6.0 mm, no rain, rows 1.5 m apart, emitters every 0.4 m at 1.0 L/h.
+
+| Field | Meaning | Example |
+| --- | --- | --- |
+| `date` | The day this row is about. The first row is today. | `2026-11-17` |
+| `et0_mm` | From `weather-service`: how much water a standard patch of grass loses that day, in mm. | `6.0` |
+| `kc` | Crop factor for this crop at its growth stage that day. The stage comes from days since planting, looked up in FAO-56 chapter 6. | `1.15` |
+| `litres` | Water to apply that day: the depth in mm × `area_m2`, since 1 mm over 1 m² is 1 litre. | `6900` |
+| `run_minutes` | How long to run the drip system to deliver `litres`. | `248` |
+| `stale` | `true` when the forecast behind this row came from an old cached forecast because Open-Meteo was down. | `false` |
 
 
 ## The `frontend`
