@@ -24,6 +24,15 @@ def test_round_half_up_places():
     assert round_half_up_places(0.70315, 4) == 0.7032
 
 
+def test_round_half_up_places_removes_float_noise_before_rounding():
+    # 0.015 * 0.7 is exactly 0.0105 on paper, a true half at 3 places -> 0.011 (half up).
+    # In floats it is 0.010499999999999999 (about 1e-18 below the half), so without the
+    # round(x, 6) step Decimal(repr(x)) sits below the half and gives 0.010.
+    x = 0.015 * 0.7
+    assert x == 0.010499999999999999
+    assert round_half_up_places(x, 3) == 0.011
+
+
 def test_task_example():
     assert litres(6.9, 1000) == 6900
     assert run_minutes(6.9, 1.5, 0.4, 1.0) == 248

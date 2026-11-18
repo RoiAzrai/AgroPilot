@@ -1,6 +1,6 @@
 import asyncio
 import json
-from datetime import timedelta
+from datetime import date, timedelta
 
 import httpx
 import pytest
@@ -285,7 +285,7 @@ def test_parallel_calls_after_the_plot(monkeypatch):
     monkeypatch.setenv("REGISTRY_URL", "http://registry.invalid")
     monkeypatch.setenv("WEATHER_URL", "http://weather.invalid")
     monkeypatch.setattr(
-        main, "make_client", lambda settings: httpx.AsyncClient(transport=fake.transport())
+        main, "make_client", lambda: httpx.AsyncClient(transport=fake.transport())
     )
     with TestClient(main.app, raise_server_exceptions=False) as client:
         response = client.get(plan_url())
@@ -301,3 +301,23 @@ def test_invalid_settings_fail_the_start(monkeypatch):
     with pytest.raises(RuntimeError, match="REGISTRY_URL"):
         with TestClient(main.app):
             pass
+
+
+def test_http_client_has_no_httpx_timeout_so_asyncio_timeout_is_the_only_bound():
+    async def build():
+        async with main.make_client() as client:
+            return client.timeout
+
+    assert asyncio.run(build()) == httpx.Timeout(None)  # httpx's default is a 5 s cut-off
+
+
+def _one_extra_day(body):
+    last = body["days"][-1]["date"]
+    day = (date.fromisoformat(last) + timedelta(days=1)).isoformat()
+    body["days"].append({"date": day, "et0_mm": 4.0, "rain_mm": 0.0})
+
+
+def test_plan_weather_with_one_extra_day_is_500(client, fake):
+    case1(fake)
+    fake.edit("forecast", _one_extra_day)
+    assert_problem(client.get(plan_url()), 500, "INTERNAL")

@@ -54,6 +54,29 @@ def test_empty_required_key_names_it(monkeypatch, key, value):
         get_settings()
 
 
+@pytest.mark.parametrize("key", ["REGISTRY_URL", "WEATHER_URL"])
+@pytest.mark.parametrize("value", ["127.0.0.1:8000", "localhost", "ftp://host", "registry"])
+def test_url_without_http_scheme_names_key(monkeypatch, key, value):
+    monkeypatch.setenv(key, value)
+    with pytest.raises(RuntimeError, match=f"{key}.*http"):
+        get_settings()
+
+
+@pytest.mark.parametrize("key", ["REGISTRY_URL", "WEATHER_URL"])
+@pytest.mark.parametrize("value", ["http://host:1", "https://host"])
+def test_url_with_http_or_https_passes(monkeypatch, key, value):
+    monkeypatch.setenv(key, value)
+    assert getattr(get_settings(), key.lower()) == value
+
+
+def test_retry_after_minimum_is_1(monkeypatch):
+    monkeypatch.setenv("RETRY_AFTER_SECONDS", "1")
+    assert get_settings().retry_after_seconds == 1
+    monkeypatch.setenv("RETRY_AFTER_SECONDS", "0")
+    with pytest.raises(RuntimeError, match="RETRY_AFTER_SECONDS"):
+        get_settings()
+
+
 @pytest.mark.parametrize("key", NUMERIC_KEYS)
 @pytest.mark.parametrize("value", ["", "abc", "1.5x"])
 def test_empty_or_non_numeric_value_names_key(monkeypatch, key, value):

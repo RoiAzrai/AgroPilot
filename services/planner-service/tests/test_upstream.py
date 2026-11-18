@@ -220,6 +220,14 @@ async def test_weather_retry_after(fake, make_upstream, header, expected):
     assert exc.value.retry_after == expected
 
 
+@pytest.mark.parametrize("header, expected", [("3600", 3600), ("3601", 3600), ("999999999", 3600)])
+async def test_weather_retry_after_is_capped_at_one_hour(fake, make_upstream, header, expected):
+    fake.override("forecast", status=503, headers={"Retry-After": header})
+    with pytest.raises(UpstreamUnavailable) as exc:
+        await make_upstream(retry_after_seconds=9).get_forecast(31.25, 34.79, 1)
+    assert exc.value.retry_after == expected
+
+
 async def test_registry_unavailable_uses_default_retry_after(fake, make_upstream):
     fake.override("plot", status=503, headers={"Retry-After": "30"})
     with pytest.raises(UpstreamUnavailable) as exc:

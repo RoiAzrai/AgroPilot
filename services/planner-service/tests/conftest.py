@@ -1,4 +1,12 @@
+import warnings
+
 import pytest
+
+with warnings.catch_warnings():
+    # Its import-time deprecation warning is ignored here only, so `-W error` stays usable.
+    # (A pyproject filterwarnings entry cannot do this: the -W option overrides it.)
+    warnings.filterwarnings("ignore", message="Using `httpx` with `starlette.testclient`")
+    from fastapi.testclient import TestClient
 
 import config
 
@@ -27,14 +35,12 @@ def client(monkeypatch, fake):
     """The whole app over the `fake` registry + weather (a fixture the test module provides).
     Settings come from env vars set here; no socket, no real .env."""
     import httpx
-    from fastapi.testclient import TestClient
-
     import main
 
     monkeypatch.setenv("REGISTRY_URL", "http://registry.invalid")
     monkeypatch.setenv("WEATHER_URL", "http://weather.invalid")
     monkeypatch.setattr(
-        main, "make_client", lambda settings: httpx.AsyncClient(transport=fake.transport())
+        main, "make_client", lambda: httpx.AsyncClient(transport=fake.transport())
     )
     # raise_server_exceptions=False: a bug must reach the 500 handler, as in production.
     with TestClient(main.app, raise_server_exceptions=False) as test_client:

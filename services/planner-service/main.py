@@ -1,12 +1,11 @@
 import asyncio
 import logging
-import re
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Coroutine
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import UTC, date, datetime, timedelta
-from typing import Annotated
+from typing import Annotated, Any
 
 import httpx
 from fastapi import FastAPI, Query, Request
@@ -24,9 +23,8 @@ from engine.suggestion import (
 )
 from errors import AppError, register_error_handlers
 from models import PlanOut, SuggestionOut
-from upstream import Upstream
+from upstream import ISO_DATE, Upstream
 
-ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 SERVICE_LOGGERS = ("upstream", "errors", "main")
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 
@@ -62,15 +60,31 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-def make_client(settings: Settings) -> httpx.AsyncClient:
-    return httpx.AsyncClient()
+POOL_LIMITS = httpx.Limits(max_connections=20, max_keepalive_connections=10)
+
+
+def make_client() -> httpx.AsyncClient:
+    # timeout=None: asyncio.timeout in upstream.py is the only bound, so the configured
+    # REGISTRY/WEATHER timeouts are not cut short by httpx's built-in 5 s.
+    return httpx.AsyncClient(timeout=None, limits=POOL_LIMITS)
+
+
+async def _gather_or_cancel(*coros: Coroutine[Any, Any, Any]) -> list[Any]:
+    """Run the calls together. The first failure decides; nothing else keeps running."""
+    tasks = [asyncio.ensure_future(coro) for coro in coros]
+    try:
+        return list(await asyncio.gather(*tasks))
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        raise
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()  # fails fast on invalid settings
     # make_client is looked up at call time, so tests can replace it.
-    async with make_client(settings) as client:
+    async with make_client() as client:
         app.state.settings = settings
         app.state.upstream = Upstream(client, settings)
         yield
@@ -96,21 +110,12 @@ async def plan(
     upstream: Upstream = request.app.state.upstream
 
     plot = await upstream.get_plot(plot_id)  # its ids and lat/lon are needed first
-    tasks = [
-        asyncio.ensure_future(call)
-        for call in (
-            upstream.get_soil_water(plot.soil_id),
-            upstream.get_flow_lph(plot.emitter_id),
-            upstream.check_crop(plot.crop_id),
-            upstream.get_forecast(plot.lat, plot.lon, days),
-        )
-    ]
-    try:
-        soil_water, flow_lph, _, forecast = await asyncio.gather(*tasks)
-    except BaseException:
-        for task in tasks:  # the first failure decides; nothing else keeps running
-            task.cancel()
-        raise
+    soil_water, flow_lph, _, forecast = await _gather_or_cancel(
+        upstream.get_soil_water(plot.soil_id),
+        upstream.get_flow_lph(plot.emitter_id),
+        upstream.check_crop(plot.crop_id),
+        upstream.get_forecast(plot.lat, plot.lon, days),
+    )
 
     inputs = PlotInputs(
         crop_id=plot.crop_id,
@@ -164,20 +169,11 @@ async def bucket_suggestion(
     plot = await upstream.get_plot(plot_id)  # 2
     # One weather call: today is the date after the past days (design Q1).
     # The emitter is not fetched: the suggestion never uses flow_lph.
-    tasks = [
-        asyncio.ensure_future(call)
-        for call in (
-            upstream.get_soil_water(plot.soil_id),
-            upstream.check_crop(plot.crop_id),
-            upstream.get_forecast(plot.lat, plot.lon, 1, MAX_PAST_DAYS),
-        )
-    ]
-    try:
-        soil_water, _, forecast = await asyncio.gather(*tasks)
-    except BaseException:
-        for task in tasks:  # the first failure decides; nothing else keeps running
-            task.cancel()
-        raise
+    soil_water, _, forecast = await _gather_or_cancel(
+        upstream.get_soil_water(plot.soil_id),
+        upstream.check_crop(plot.crop_id),
+        upstream.get_forecast(plot.lat, plot.lon, 1, MAX_PAST_DAYS),
+    )
 
     today = forecast.days[forecast.past_days_returned].date
     needed = past_days_requested(irrigated_on, today)

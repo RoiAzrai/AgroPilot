@@ -21,6 +21,7 @@ from engine.plan import DayWeather
 REGISTRY = "registry-service"
 WEATHER = "weather-service"
 ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+MAX_RETRY_AFTER_SECONDS = 3600  # a Retry-After from weather is passed on, but never longer
 
 
 class UpstreamUnavailable(Exception):
@@ -127,7 +128,7 @@ class Upstream:
         if service != WEATHER:
             return default
         value = response.headers.get("Retry-After", "")
-        return int(value) if value.isdecimal() and int(value) > 0 else default
+        return min(int(value), MAX_RETRY_AFTER_SECONDS) if value.isdecimal() and int(value) > 0 else default
 
     async def _registry_json(self, path: str) -> dict[str, Any]:
         response = await self._get(

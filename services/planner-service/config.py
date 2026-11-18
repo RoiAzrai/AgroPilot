@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     max_daily_run_minutes: int = Field(1440, ge=1, le=1440)
     depletion_fraction_override: float | None = Field(None, ge=0, le=1)
     weather_refresh_deadline_seconds: float = Field(5, gt=0)
-    retry_after_seconds: int = Field(5, ge=0)
+    retry_after_seconds: int = Field(5, ge=1)
 
 
 def get_settings() -> Settings:
@@ -33,8 +33,11 @@ def get_settings() -> Settings:
             f"Invalid settings. {problems}. Copy .env.example to .env and fix it."
         ) from None
     for key in ("registry_url", "weather_url"):
-        if not getattr(settings, key).strip():
+        value = getattr(settings, key)
+        if not value.strip():
             raise RuntimeError(f"{key.upper()} is required and must not be empty.")
+        if not value.startswith(("http://", "https://")):
+            raise RuntimeError(f"{key.upper()} must start with http:// or https://.")
     if settings.weather_timeout_seconds <= settings.weather_refresh_deadline_seconds:
         raise RuntimeError(
             "WEATHER_TIMEOUT_SECONDS must be above WEATHER_REFRESH_DEADLINE_SECONDS."

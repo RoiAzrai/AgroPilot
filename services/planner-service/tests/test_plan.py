@@ -1,3 +1,4 @@
+import ast
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -232,9 +233,36 @@ def test_unknown_crop():
         plan_for(crop_id="wheat")
 
 
-def test_engine_has_no_clock():
-    forbidden = ("now(", "today(", "import time", "httpx", "fastapi", "config")
+ALLOWED_ENGINE_IMPORTS = {
+    "dataclasses", "datetime", "decimal", "math", "typing", "collections.abc",
+}
+ENGINE_MODULES = {path.stem for path in Path("engine").glob("*.py")}
+
+
+def _imported_modules(tree: ast.AST) -> set[str]:
+    found = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found |= {alias.name for alias in node.names}
+        elif isinstance(node, ast.ImportFrom):
+            found.add(("." * node.level) + (node.module or ""))
+    return found
+
+
+def _is_allowed(module: str) -> bool:
+    if module in ALLOWED_ENGINE_IMPORTS:
+        return True
+    parts = module.lstrip(".").split(".")
+    return parts[0] == "engine" or (module.startswith(".") and parts[0] in ENGINE_MODULES | {""})
+
+
+def test_engine_imports_only_allowed_modules():
+    assert ENGINE_MODULES
     for path in Path("engine").glob("*.py"):
-        text = path.read_text()
-        for word in forbidden:
-            assert word not in text, f"{path} contains {word!r}"
+        for module in _imported_modules(ast.parse(path.read_text())):
+            assert _is_allowed(module), f"{path} imports {module!r}"
+
+
+def test_engine_import_check_rejects_a_clock_or_io():
+    tree = ast.parse("import time\nfrom os import path\nimport httpx\nfrom config import Settings\n")
+    assert not any(_is_allowed(m) for m in _imported_modules(tree))

@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from urllib.parse import parse_qs
 
 import httpx
@@ -250,3 +250,24 @@ def test_suggestion_stale_propagates(client, fake):
 def test_unexpected_weather_answer_is_500(client, fake):
     fake.override("forecast", content=b"not json")
     assert_problem(client.get(url(days_back(3))), 500, "INTERNAL")
+
+
+def test_suggestion_weather_with_one_extra_day_is_500(client, fake):
+    case4(fake)
+
+    def extra(body):
+        last = date.fromisoformat(body["days"][-1]["date"]) + timedelta(days=1)
+        body["days"].append({"date": last.isoformat(), "et0_mm": 5.0, "rain_mm": 0.0})
+
+    fake.edit("forecast", extra)
+    assert_problem(client.get(url(days_back(3))), 500, "INTERNAL")
+
+
+def test_answer_does_not_depend_on_the_clock_only_on_weather_today(client, fake, monkeypatch):
+    case4(fake)
+    before = client.get(url(days_back(4)))
+    assert before.status_code == 200
+    # The clock moves 3 days; weather's "today" stays FAKE_TODAY. Still inside the UTC+14 check.
+    monkeypatch.setattr(main, "utc_now", lambda: datetime(2031, 6, 4, 12, tzinfo=UTC))
+    after = client.get(url(days_back(4)))
+    assert after.json() == before.json()
