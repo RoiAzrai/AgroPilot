@@ -7,6 +7,12 @@ on:
 permissions:
   contents: read
 
+# uv run from services/<service> does not see the root .python-version, so without this
+# CI would pick the newest Python (3.14). Pin it to match development (3.12).
+# TODO (stage 6): make code/tests independent of the Python version and test 3.12 + 3.14.
+env:
+  UV_PYTHON: "3.12"
+
 defaults:
   run:
     working-directory: services/weather-service
@@ -23,6 +29,9 @@ jobs:
 
       - name: Install dependencies
         run: uv sync --locked
+
+      - name: Show Python version
+        run: uv run python --version
 
       - name: Run tests
         run: uv run pytest
