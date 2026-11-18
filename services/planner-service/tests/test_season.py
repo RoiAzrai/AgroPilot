@@ -84,3 +84,9 @@ def test_get_crop_by_registry_id():
 def test_get_crop_rejects_skill_name_pepper():
     with pytest.raises(UnknownCrop):
         get_crop("pepper")
+
+
+@pytest.mark.parametrize("i", [0, -5])
+def test_root_depth_before_planting_raises(i):
+    with pytest.raises(ValueError):
+        root_depth(TOMATO, i)

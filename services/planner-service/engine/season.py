@@ -38,5 +38,7 @@ def kc(crop: Crop, i: int) -> float:
 
 
 def root_depth(crop: Crop, i: int) -> float:
-    """Annex 8 Eq. 8-3, time-based."""
+    """Annex 8 Eq. 8-3, time-based. Only defined for planted days."""
+    if i < 1:
+        raise ValueError(f"no root depth before planting (day {i})")
     return 0.20 + (crop.zmax - 0.20) * min(1, (i - 1) / (crop.l_ini + crop.l_dev))
