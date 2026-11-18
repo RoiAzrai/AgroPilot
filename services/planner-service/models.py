@@ -26,3 +26,14 @@ class PlanOut(BaseModel):
     fetched_at: str
     stale: bool
     days: list[DayOut]
+
+
+class SuggestionOut(BaseModel):
+    plot_id: str
+    last_irrigation: date
+    suggestion: float | None
+    exact: bool
+    reason: str | None
+    past_days_requested: int
+    past_days_returned: int
+    stale: bool
