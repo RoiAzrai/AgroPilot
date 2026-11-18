@@ -634,3 +634,107 @@ and why.
   fewer days (for example, ask the grower instead of suggesting a bucket
   level). A 503 hid 67 good days because 25 older ones were missing, and
   told the client nothing it could act on.
+
+## 40. planner-service: "cannot suggest" is a 200, not an error (P4)
+- **Decided (2026-11-18):** when the bucket suggestion can't be computed
+  exactly (fewer past days than needed and the optimistic run never empties,
+  or no past days at all: I22) or the season has ended (I18), the answer is
+  `200` with `suggestion: null`, `exact: false` and a `reason`
+  (`"insufficient_past_weather"` or `"season_ended"`). Invalid input (I15:
+  a future date, before planting, more than 92 days ago, not a date) is `422`.
+- **Why:** the request was valid and every upstream answered. A 422 would
+  blame the grower's input, a 503 would invite a retry that gives the same
+  answer. "We can't know this exactly, enter the level by hand" is a correct,
+  final answer, and the frontend shows it as such.
+
+## 41. planner-service: upstream errors (P6)
+- **Decided (2026-11-18):** a registry 404 for the plot is `404 NOT_FOUND`.
+  A connection error, a timeout or a 5xx from the registry or weather is
+  `503 UPSTREAM_UNAVAILABLE`, its `detail` names the service, with
+  `Retry-After`. Any other unexpected upstream answer (other status, bad JSON,
+  a missing field, a wrong number of days, a non-finite number) is a `500`.
+  Same problem+json body as the registry and weather. No partial plan ever.
+- **Why:** FR-2.14 asks for 503 and the service name when an upstream is down
+  or slow. An answer we don't understand is not an outage: as in weather-service
+  (entry 37), a bug must not hide as "service down". And a plan built around a
+  missing number would be the "plan of zeros" FR-2.14 forbids.
+
+## 42. planner-service: timeouts, the weather one above weather's deadline (P7)
+- **Decided (2026-11-18):** `REGISTRY_TIMEOUT_SECONDS=3` and
+  `WEATHER_TIMEOUT_SECONDS=6` in `.env`. The weather timeout must stay above
+  weather's 5 s refresh deadline, checked at startup. No retries in the
+  planner (P8).
+- **Why:** when Open-Meteo is slow, weather-service spends up to its 5 s
+  deadline and then answers with a stale forecast. A planner timeout below
+  that would turn a valid stale answer into a 503 and break FR-2.13 (a stale
+  forecast still gives a plan). The registry answers in milliseconds (NFR-1.1),
+  so 3 s only catches a hung registry. Retries are weather's job, behind its
+  pause; retrying in the planner as well would multiply the wait.
+
+## 43. planner-service: a daily cap on run minutes (P11, skill I23)
+- **Decided (2026-11-18):** `MAX_DAILY_RUN_MINUTES` (default 1440, `.env`).
+  When a refill needs more, the plan irrigates the cap today and continues on
+  the following days until the bucket is full again. Goes into the skill as
+  I23.
+- **Why:** the North block (loam, tomato, Zr 0.70 → TAW 122.5 mm, RAW 49 mm;
+  emitters 1.5 × 0.4 m at 1.0 L/h = 1.67 mm/h) needs about 1,800 minutes to
+  refill once. A plan that says "run 1,800 minutes today" is physically
+  impossible, and a grower who can't follow the plan stops trusting it. No
+  case in cases.md reaches the cap, so no existing number changes.
+
+## 44. planner-service: today for the suggestion comes from one weather call (Q1)
+- **Decided (2026-11-18):** the suggestion calls weather once with
+  `days=1&past_days=92`; today is the date after the past days. The planner
+  uses only the `today − D − 1` days it needs, and `past_days_requested`
+  reports that count, not 92. A future date is checked before any call
+  against UTC+14, like the registry.
+- **Why:** only weather-service knows the point's local date, and the I15
+  rules need it. A planner clock plus a time zone key could disagree with
+  weather around midnight; two calls would double the latency. 92 past days is
+  one cached entry on weather anyway.
+
+## 45. planner-service: weather's deadline is a planner key (Q2)
+- **Decided (2026-11-18):** `WEATHER_REFRESH_DEADLINE_SECONDS=5` in `.env`
+  (strict key, in `.env.example`). At startup `WEATHER_TIMEOUT_SECONDS` must
+  be above it.
+- **Why:** the P7 check needs weather's deadline and the planner can't read
+  weather's settings. A key is explicit and can differ per environment; a
+  constant in code would hide a value that can change. The cost, two places
+  to keep in step, is written in the README.
+
+## 46. planner-service: output precision (Q3)
+- **Decided (2026-11-18):** the engine computes unrounded. `kc` is served with
+  4 decimals, `bucket_mm` and `bucket_capacity_mm` with 2, rounded half up
+  (I19 rule). `et0_mm` and `rain_mm` pass through exactly as weather sent
+  them.
+- **Why:** cases.md shows kc to 4 decimals and mm to 2-3, so a hand check
+  matches. Unrounded floats (115.60000000000001) look like a bug to a grower.
+  The planner didn't compute ET0 or rain, so it must not alter them.
+
+## 47. planner-service: a day before planting is "not_planted" (Q4)
+- **Decided (2026-11-18):** a plan day before the planting date has
+  `stage: "not_planted"`, `litres` and `run_minutes` 0, and `kc`, `bucket_mm`,
+  `bucket_capacity_mm` null, like the ended season of P2.
+- **Why:** the registry accepts a planting date up to UTC+14, so for a few
+  hours the planting date is tomorrow at the point. Calling that season day 1
+  would invent a crop that isn't there, and a 422 would blame a valid plot.
+
+## 48. planner-service: the seed stays, the README explains (Q5)
+- **Decided (2026-11-18):** the seed data is unchanged. All four seed seasons
+  have ended by 2026-11-18, so their plans are `ended`. The README says so and
+  the demo creates a new plot with `POST /v1/plots`. Requirement for stage 5:
+  the frontend shows "season ended", not "no irrigation today".
+- **Why:** FR-2.2 fixes the seed rows and registry tests may depend on them.
+  A date override on the plan would be new scope. An ended season returning
+  zeros is correct, but shown as "no irrigation" it would read as the plan of
+  zeros that FR-2.14 forbids.
+
+## 49. planner-service: order of checks in the bucket suggestion (P4, I15, I18)
+- **Decided (2026-11-18):** (1) bad date format or a date clearly in the
+  future (beyond UTC+14) → 422, before any upstream call; (2) fetch the plot
+  (404 / 503); (3) season ended → 200, `suggestion: null`, `reason:
+  "season_ended"`; (4) date before planting or more than 92 days back → 422;
+  (5) otherwise the calculation → 200.
+- **Why:** a future date is invalid input for any plot; the other checks
+  depend on the plot, so they run after it is fetched, and "no suggestion
+  because the season ended" is the true answer (I18).
