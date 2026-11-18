@@ -1,7 +1,7 @@
 import sqlite3
 
 import pytest
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import Connection, text
 
@@ -27,6 +27,10 @@ def probe(db_file) -> TestClient:
     @probe_app.get("/validation")
     def raise_validation():
         raise validation("Unknown farm")
+
+    @probe_app.get("/custom-405")
+    def custom_405():
+        raise HTTPException(405, "Use POST here", headers={"Allow": "POST"})
 
     @probe_app.get("/typed")
     def typed(n: int):
@@ -108,3 +112,10 @@ def test_health_is_unchanged(client):
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/json"
     assert response.json() == {"status": "ok"}
+
+
+def test_http_error_with_custom_detail_keeps_it(probe):
+    # Only Starlette's stock 404/405 text is rewritten; a route's own detail passes through.
+    body = assert_problem(probe.get("/custom-405"), 405, "VALIDATION")
+    assert body["detail"] == "Use POST here"
+    assert probe.get("/custom-405").headers["allow"] == "POST"

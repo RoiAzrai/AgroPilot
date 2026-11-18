@@ -1,5 +1,7 @@
+import runpy
 import sqlite3
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -195,3 +197,23 @@ def test_unopenable_sqlite_file_is_one_line(tmp_path, monkeypatch, capsys):
     assert len(lines) == 1
     assert lines[0].startswith("Cannot seed sqlite file")
     assert not path.exists()
+
+
+def test_describe_target_of_plain_sqlite_path(tmp_path):
+    path = tmp_path / "plain.db"
+    text = seed_db.describe_target(make_url(f"sqlite:///{path}"))
+    assert text == f"sqlite file {path.resolve()}"
+
+
+def test_running_the_module_seeds_the_database(tmp_path, monkeypatch, capsys):
+    path = tmp_path / "from-main.db"
+    monkeypatch.setenv("DATABASE_URL", sqlite_url(path).replace("mode=rw", "mode=rwc"))
+    monkeypatch.setattr(config, "ENV_FILE", tmp_path / "missing.env")
+    monkeypatch.setattr(sys, "argv", ["seed_db.py"])
+    with pytest.raises(SystemExit) as exited:
+        runpy.run_module("seed_db", run_name="__main__")
+    assert exited.value.code == 0
+    assert capsys.readouterr().out.startswith("Created and seeded sqlite file")
+    conn = sqlite3.connect(path)
+    assert conn.execute("SELECT COUNT(*) FROM plots").fetchone()[0] == 4
+    conn.close()

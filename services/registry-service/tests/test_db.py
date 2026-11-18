@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 import sqlalchemy.exc
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from sqlalchemy import text
 
 import config
@@ -105,3 +106,23 @@ def test_postgres_engine_is_created_without_connecting():
 def test_lock_timeout_follows_busy_timeout():
     kwargs = db.engine_kwargs(_pg_settings(db_busy_timeout_seconds=0.25))
     assert kwargs["connect_args"]["options"] == "-c lock_timeout=250"
+
+
+def test_other_settings_errors_are_not_masked_as_missing_url(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(config, "ENV_FILE", tmp_path / "missing.env")
+    monkeypatch.setenv("DB_CONNECT_TIMEOUT_SECONDS", "soon")
+    with pytest.raises(ValidationError) as caught:
+        get_settings()
+    assert [err["loc"] for err in caught.value.errors()] == [("db_connect_timeout_seconds",)]
+
+
+def test_unexpected_exception_is_not_unavailable_and_has_unknown_driver_code():
+    error = ValueError("not a driver error")
+    assert db.is_unavailable(error) is False
+    assert db.driver_code(error) == "unknown"
+
+
+def test_unsupported_backend_is_rejected():
+    settings = config.Settings(database_url="mysql://u:p@localhost/registry", _env_file=None)
+    with pytest.raises(ValueError, match="Unsupported database backend: mysql"):
+        db.engine_kwargs(settings)

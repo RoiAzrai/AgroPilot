@@ -210,3 +210,10 @@ def test_postgres_fk_on_farm_delete_is_409(failing_writes):
 )
 def test_postgres_unique_violation_key(orig, key):
     assert db.unique_violation_key(orig) == key
+
+
+def test_farm_delete_with_other_integrity_error_is_not_a_conflict(failing_writes):
+    # Only a foreign-key failure means "farm has plots"; any other one must surface as a 500.
+    error = integrity(fake_pg_error("23502"))
+    response = failing_writes(error).delete(f"/v1/farms/{DEMO_COOPERATIVE}")
+    assert_internal_error(response)

@@ -3,6 +3,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from conftest import assert_problem
+from routers import plots
 
 DEMO_COOPERATIVE = "b7e2c0a0-3c1d-4f0a-9a11-0c5d2e6f1001"
 EAST_FARM = "a9c1e4b2-6f70-4d8e-a144-3f8b5c904004"
@@ -275,3 +276,14 @@ def test_farm_can_be_deleted_once_its_plots_are_gone(client):
 def test_unknown_or_malformed_id_is_404(client, plot_id, method, body):
     response = client.request(method, f"/v1/plots/{plot_id}", json=body)
     assert_problem(response, 404, "NOT_FOUND")
+
+
+def test_patch_plot_deleted_during_update_is_404(client, monkeypatch, all_plots):
+    # The plot disappears between the lookup and the UPDATE: the UPDATE changes no row.
+    ghost = str(uuid4())
+    existing = client.get(f"/v1/plots/{NORTH_BLOCK}").json()
+    monkeypatch.setattr(plots, "_get_plot", lambda conn, plot_id: existing)
+    before = all_plots()
+    body = assert_problem(client.patch(f"/v1/plots/{ghost}", json={"name": "Renamed"}), 404, "NOT_FOUND")
+    assert body["detail"] == "Plot not found"
+    assert all_plots() == before
