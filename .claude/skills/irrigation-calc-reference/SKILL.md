@@ -28,7 +28,9 @@ i = (date - planting_date).days + 1        # the planting day is day 1
 
 - Stage lengths come from FAO Table 11 (tomato: the "Arid Region", January row; pepper: the "Europe and Medit." row, taking 30 from "25/30"). Kc comes from Table 12, Zmax and p from Table 22. **Why:** these are FAO's own numbers, and tomato Kc_end 0.80 is the middle of the 0.70–0.90 range.
 - p in the table is the per-crop **default**. The optional setting `DEPLETION_FRACTION_OVERRIDE` (planner-service config, range 0..1, unset by default) replaces p for every crop when it is set: 0.5 is the task's "half", and 0 gives daily irrigation of ETc. **Why:** the irrigation policy is configuration, not code (decision I21 in decisions.md).
+- The engine's crop table is keyed by the registry id: `tomato` and `bell-pepper`. The text and the table above say "pepper" for `bell-pepper`.
 - `i > season` → stage `"ended"`: no irrigation (`run_minutes: 0`). **Why:** FAO gives no Kc after the late stage, and the crop is harvested.
+- `i < 1` → stage `"not_planted"`, with the same zeros and nulls as `"ended"`: `litres` 0, `run_minutes` 0, `kc`, `bucket_mm` and `bucket_capacity_mm` null. **Why:** the registry runs on UTC+14, so for a few hours a plan's first day can come before the planting date, and there is no crop yet.
 
 ## Kc (FAO Eq. 66)
 
@@ -64,17 +66,21 @@ ETc = kc * ET0                          # the crop's water use that day, mm
 ```
 rain_eff = rain if rain >= 0.2 * ET0 else 0          # small rain is ignored, no runoff
 Dr_start = max(Dr_prev - rain_eff, 0)                # rain beyond full drains away
-if Dr_start + ETc > RAW:
-    I = Dr_start + ETc;  Dr_end = 0                  # irrigate today, refill to full
+if refilling or Dr_start + ETc > RAW:                # refilling: carried day to day within one plan, starts False
+    need = Dr_start + ETc                            # the full refill
+    I = min(need, cap_mm)                            # at most one day's cap (I23)
+    Dr_end = min(need - I, TAW)
+    refilling = Dr_end > 0                           # the rest continues tomorrow
 else:
-    I = 0;               Dr_end = min(Dr_start + ETc, TAW)
+    I = 0;  Dr_end = min(Dr_start + ETc, TAW)
 bucket_mm = TAW - Dr_end                             # the bucket level reported for the day
 ```
 
 - **Rain filter.** FAO Ch. 8 says rain below about 0.2·ET0 per day can be ignored, and Annex 8 assumes RO = 0. **Why:** a light shower wets the surface and evaporates. It never reaches the roots.
 - **Cap at 0.** **Why:** a bucket can't be fuller than full. The extra water is deep percolation (FAO Eq. 88).
 - **Irrigate when the day would end below RAW, on that same day, refilling to full.** **Why:** refilling to full comes from Annex 8 (net irrigation = depletion). Irrigating on the same day is **our** choice, based on FAO Ch. 8 ("irrigations should be applied before or at the moment when the readily available soil water is depleted"). It avoids the stress day that Annex 8 gets by irrigating the next morning.
-- **Cap at TAW.** **Why:** the bucket can't go below empty. This branch only matters in the suggestion simulation, which never irrigates.
+- **Daily cap (I23).** `cap_mm = MAX_DAILY_RUN_MINUTES * flow_lph / (row_spacing_m * emitter_spacing_m) / 60`. A refill that needs more than `cap_mm` irrigates `cap_mm` today and continues on the following days until the bucket is full. Rain lowers the need, and the season end stops it. Details and the stop rule are in decisions.md (I23). **Why:** a day has 1440 minutes.
+- **Cap at TAW.** **Why:** the bucket can't go below empty. A plan reaches this cap when it starts (nearly) empty (`bucket_start` near 0) or when the daily cap (I23) is below that day's ETc, and the suggestion simulation reaches it because it never irrigates. `need` itself is not capped, only `Dr_end`.
 - TAW changes each day while Zr grows. `Dr` carries over in mm.
 
 ## Drip conversion
@@ -94,8 +100,10 @@ run_minutes = round(I * area_m2 / (emitters * flow_lph) * 60)    # whole minutes
 
 ```
 bucket_start in [0, 1], default 1.0 (full)
-Dr_0 = (1 - bucket_start) * TAW(day 1 of the plan)
+Dr_0 = (1 - bucket_start) * TAW(first planted day of the plan)
 ```
+
+- The first planted day is plan day 1, unless that day is `"not_planted"`. Then it is the first day with `i >= 1`. **Why:** before planting there is no TAW.
 
 - `bucket_start` outside [0, 1] → `422`, `code`: `VALIDATION`.
 - **Why:** the planner keeps no state, so it can't know today's bucket level. Full is the task's own assumption (its bucket example starts full). It can postpone irrigation, which is why the suggestion exists.
@@ -113,7 +121,7 @@ suggestion = clamp(1 - Dr / TAW(today), 0, 1)
 ```
 
 - `422` when D is in the future, before planting, more than 92 days ago, or not a valid date.
-- Season ended → stage `"ended"`, no suggestion.
+- Season ended → `suggestion: null`, `reason: "season_ended"` (I18).
 - weather-service can return fewer past days than requested (`past_days_returned`). What to do then is in decisions.md (I22).
 - **Why:** without this the planner would assume a full bucket every day and keep postponing irrigation forever. The details are in decisions.md.
 

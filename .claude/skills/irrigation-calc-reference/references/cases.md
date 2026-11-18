@@ -59,6 +59,20 @@ Each case follows the formulas in [../SKILL.md](../SKILL.md). The bucket starts 
 
 - In 4a, Dr passes RAW (23.24) without triggering an irrigation. This is intended: the simulation never irrigates.
 
+## Case 5: daily cap (I23)
+
+- Input: tomato, loam (`available_water_mm_per_m` 175), plan day 1 = season day 80 (mid), ET0 6.0, no rain, `bucket_start` 0.7, `MAX_DAILY_RUN_MINUTES` 1440.
+- Plot: area 1000 m², row 1.5 m, emitter spacing 0.4 m, flow 1.0 L/h (1.67 mm/h).
+- Every day: Kc 1.15, Zr 0.70, TAW 122.50, RAW 49.00, ETc 6.90, cap_mm 40.00 (1440 min). Dr_0 = 0.3 × 122.50 = 36.75.
+
+| Day | 1 | 2 | 3 | 4 | 5 | 6 | 7 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| bucket_mm | 78.85 | 111.95 | 122.50 | 115.60 | 108.70 | 101.80 | 94.90 |
+| litres | 0 | 40000 | 17450 | 0 | 0 | 0 | 0 |
+| run_minutes | 0 | 1440 | 628 | 0 | 0 | 0 | 0 |
+
+- Day 2 needs 50.55 mm (1819.8 min): 40 mm today, 10.55 mm left. Day 3: 10.55 + 6.9 = 17.45 mm (628.2 min), the bucket ends full.
+
 ## Conversion check: the example in docs/task-p2.md
 
 - Input: tomato mid-season, 1000 m², ET0 6.0, Kc 1.15.
