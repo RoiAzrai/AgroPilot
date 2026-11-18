@@ -176,6 +176,23 @@ def test_planting_after_whole_plan():
     assert col(days, "bucket_mm") == [None] * 3
 
 
+def test_every_day_after_season_end():
+    # Tomato season is 135 days; day 1 is season day 136 (> 135), so every day is "ended" (P2):
+    # no irrigation, no Kc, no bucket. et0, rain and stale are copied from the input.
+    days = plan_for(
+        season_day=136, et0=4.2, rain={2: 7.5}, stale={3: True}, bucket_start=0.5, days=4
+    )
+    assert col(days, "stage") == ["ended"] * 4
+    assert col(days, "litres") == [0] * 4
+    assert col(days, "run_minutes") == [0] * 4
+    assert col(days, "kc") == [None] * 4
+    assert col(days, "bucket_mm") == [None] * 4
+    assert col(days, "bucket_capacity_mm") == [None] * 4
+    assert col(days, "et0_mm") == [4.2] * 4
+    assert col(days, "rain_mm") == [0.0, 7.5, 0.0, 0.0]
+    assert col(days, "stale") == [False, False, True, False]
+
+
 # --- served rounding ---------------------------------------------------------
 
 def test_kc_and_mm_served_half_up():
