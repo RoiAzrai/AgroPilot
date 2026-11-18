@@ -143,7 +143,7 @@ Approved by the owner before execution. Each one departs from the design; each i
   - `test_continuation_finishing_day`: `step(10.55, ..., refilling=True)` gives `irrigation_mm == pytest.approx(17.45)`, `dr_end == 0`, `refilling is False`.
   - `test_continuation_forces_irrigation_below_raw`: with `refilling=True` the finishing day irrigates although `Dr_start + ETc` (17.45) is below RAW 49.
   - `test_continuation_rain_lowers_need`: `step(10.55, 12.0, 6.0, 6.9, ..., True)` gives `irrigation_mm == pytest.approx(6.9)`, `dr_end == 0`.
-  - `test_below_cap_identical_to_old_rule`: case 1 day 5 (`dr_prev 17.25`, ETc 5.75, TAW 58.10, RAW 23.24, cap 64): `irrigation_mm == pytest.approx(28.75)`, `dr_end == 0`, `refilling is False`.
+  - `test_below_cap_identical_to_old_rule`: case 1 day 5 (`dr_prev 23.00`, ETc 5.75, TAW 58.10, RAW 23.24, cap 64): `irrigation_mm == pytest.approx(28.75)`, `dr_end == 0`, `refilling is False`.
   - `test_dr_end_capped_at_taw`: cap 1 mm, `dr_prev 120`, ETc 6.9, TAW 122.5: `dr_end == 122.5`, `refilling is True` (I17, crop stressed).
   - `test_rain_beyond_full`: `dr_prev 3`, rain 12 (ET0 6): `dr_start` clamps to 0 (`dr_end == pytest.approx(6.9)` with no irrigation).
 - [ ] **Step 2: Run** `uv run pytest tests/test_bucket.py -v`. Expected: FAIL.
