@@ -1,3 +1,8 @@
+import {
+  friendlyValidationMessage,
+  MSG_GENERIC_DATE,
+} from "./bucket";
+
 export type FieldErrors = Record<string, string>;
 
 export type ActionResult<T = undefined> =
@@ -7,6 +12,7 @@ export type ActionResult<T = undefined> =
       kind: "validation" | "unavailable" | "timeout" | "rejected";
       message: string;
       fieldErrors?: FieldErrors;
+      plotGone?: boolean;
     };
 
 // Structural subset of ApiError, so this file stays importable from client code and tests.
@@ -91,4 +97,44 @@ export function plotFailureToResult(f: FailureLike): ActionResult<never> {
     }
   }
   return failureToResult(f);
+}
+
+const PLANNER_UNREACHABLE =
+  "The planner can't reach its data right now. Try again in a moment.";
+const OUR_SIDE = "Something went wrong on our side. Try again.";
+
+// The bucket suggestion is a read: trying again is always safe. Never a zero or a guessed value.
+// `plantingDate` is only used to word the "before planting" message.
+export function suggestionFailureToResult(
+  f: FailureLike,
+  plantingDate?: string,
+): ActionResult<never> {
+  if (f.kind === "timeout") {
+    return { ok: false, kind: "timeout", message: "No answer in time. Try again." };
+  }
+  if (f.kind === "network") {
+    return { ok: false, kind: "unavailable", message: PLANNER_UNREACHABLE };
+  }
+  if (f.status === 404) {
+    return {
+      ok: false,
+      kind: "rejected",
+      message: "This plot no longer exists.",
+      plotGone: true,
+    };
+  }
+  if (f.status === 422) {
+    return {
+      ok: false,
+      kind: "validation",
+      message: friendlyValidationMessage(f.detail, plantingDate),
+    };
+  }
+  if (f.status === 500) {
+    return { ok: false, kind: "unavailable", message: OUR_SIDE };
+  }
+  if (f.status !== undefined && f.status >= 500) {
+    return { ok: false, kind: "unavailable", message: PLANNER_UNREACHABLE };
+  }
+  return { ok: false, kind: "rejected", message: MSG_GENERIC_DATE };
 }

@@ -5,9 +5,18 @@ import {
   deleteFailureToResult,
   failureToResult,
   plotFailureToResult,
+  suggestionFailureToResult,
   type ActionResult,
 } from "@/lib/action-result";
+import {
+  describeSuggestion,
+  isRealIsoDate,
+  isUuid,
+  MSG_FORMAT,
+  type SuggestionView,
+} from "@/lib/bucket";
 import { ApiError } from "@/lib/errors";
+import { getBucketSuggestion } from "@/lib/planner";
 import { createFarm, createPlot, deletePlot } from "@/lib/registry";
 import {
   farmSchema,
@@ -75,6 +84,32 @@ export async function deletePlotAction(id: string): Promise<ActionResult> {
     return { ok: true, data: undefined };
   } catch (e) {
     if (e instanceof ApiError) return deleteFailureToResult(e);
+    throw e;
+  }
+}
+
+// Checks only the format and that the date is real. The planner judges the range
+// (future, before planting, too old). `plantingDate` only words the "before planting" message.
+export async function suggestBucketAction(
+  plotId: string,
+  date: string,
+  plantingDate?: string,
+): Promise<ActionResult<SuggestionView>> {
+  // Server actions are public endpoints: a non-UUID id never reaches the planner URL.
+  if (!isUuid(plotId)) {
+    return { ok: false, kind: "rejected", message: "This plot no longer exists.", plotGone: true };
+  }
+  if (typeof date !== "string" || !isRealIsoDate(date)) {
+    return { ok: false, kind: "validation", message: MSG_FORMAT };
+  }
+  const planting =
+    typeof plantingDate === "string" && isRealIsoDate(plantingDate)
+      ? plantingDate
+      : undefined;
+  try {
+    return { ok: true, data: describeSuggestion(await getBucketSuggestion(plotId, date)) };
+  } catch (e) {
+    if (e instanceof ApiError) return suggestionFailureToResult(e, planting);
     throw e;
   }
 }
