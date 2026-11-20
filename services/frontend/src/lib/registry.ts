@@ -3,8 +3,13 @@ import { config } from "./config";
 import { serviceFetch } from "./http";
 import type { Crop, Emitter, Farm, Plot, Soil } from "./types";
 
-function get<T>(path: string, query?: Record<string, string | number>) {
+function call<T>(
+  path: string,
+  extra: { method?: "GET" | "POST" | "DELETE"; body?: unknown } = {},
+  query?: Record<string, string | number>,
+) {
   return serviceFetch<T>({
+    ...extra,
     service: "registry",
     baseUrl: config.registryUrl,
     path,
@@ -12,6 +17,9 @@ function get<T>(path: string, query?: Record<string, string | number>) {
     query,
   });
 }
+
+const get = <T>(path: string, query?: Record<string, string | number>) =>
+  call<T>(path, {}, query);
 
 export const listFarms = () => get<Farm[]>("/v1/farms");
 export const listPlots = (farmId: string) =>
@@ -21,3 +29,7 @@ export const getPlot = (id: string) =>
 export const listCrops = () => get<Crop[]>("/v1/crops");
 export const listSoils = () => get<Soil[]>("/v1/soils");
 export const listEmitters = () => get<Emitter[]>("/v1/emitters");
+export const createFarm = (name: string) =>
+  call<Farm>("/v1/farms", { method: "POST", body: { name } });
+export const deletePlot = (id: string) =>
+  call<void>(`/v1/plots/${encodeURIComponent(id)}`, { method: "DELETE" });

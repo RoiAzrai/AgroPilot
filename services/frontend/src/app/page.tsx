@@ -1,4 +1,5 @@
 import { Suspense } from "react";
+import { AddFarmDialog } from "@/components/add-farm-dialog";
 import { ErrorPanel } from "@/components/error-panel";
 import { FarmSection } from "@/components/farm-section";
 import { StatusLine } from "@/components/status-line";
@@ -52,9 +53,12 @@ export default function Home() {
   return (
     <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-8 px-4 py-10 sm:py-14">
       <header className="flex flex-col gap-3">
-        <h1 className="text-5xl font-extrabold tracking-tight sm:text-6xl">
-          AgroPilot
-        </h1>
+        <div className="flex items-start justify-between gap-3">
+          <h1 className="text-5xl font-extrabold tracking-tight sm:text-6xl">
+            AgroPilot
+          </h1>
+          <AddFarmDialog />
+        </div>
         <p className="max-w-prose text-lg text-muted-foreground">
           When to water each plot, and for how long.
         </p>

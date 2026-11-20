@@ -8,6 +8,8 @@ type Options = {
   path: string;
   timeoutMs: number;
   query?: Record<string, string | number>;
+  method?: "GET" | "POST" | "DELETE";
+  body?: unknown;
 };
 
 async function readProblem(res: Response): Promise<Problem | undefined> {
@@ -32,8 +34,13 @@ export async function serviceFetch<T>(opts: Options): Promise<T> {
   let res: Response;
   try {
     res = await fetch(url, {
+      method: opts.method ?? "GET",
       cache: "no-store",
-      headers: { accept: "application/json, application/problem+json" },
+      headers: {
+        accept: "application/json, application/problem+json",
+        ...(opts.body !== undefined && { "content-type": "application/json" }),
+      },
+      body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
       signal: AbortSignal.timeout(opts.timeoutMs),
     });
   } catch (err) {
@@ -58,5 +65,6 @@ export async function serviceFetch<T>(opts: Options): Promise<T> {
     });
   }
 
+  if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }

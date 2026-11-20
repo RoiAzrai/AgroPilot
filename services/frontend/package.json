@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start -p 3000",
     "lint": "eslint",
-    "test": "tsx --test src/lib/recommendation.test.ts"
+    "test": "tsx --test src/lib/*.test.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",
@@ -19,6 +19,7 @@
     "react-dom": "19.3.0",
     "server-only": "^0.0.1",
     "shadcn": "^4.23.0",
+    "sonner": "^2.0.8",
     "tw-animate-css": "^1.4.0",
     "zod": "^4.6.7"
   },

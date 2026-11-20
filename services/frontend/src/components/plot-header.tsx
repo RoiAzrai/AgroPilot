@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { ChevronLeft } from "lucide-react";
+import { DeletePlotButton } from "@/components/delete-plot-button";
 import type { Plot } from "@/lib/types";
 
 function cropLabel(cropId: string): string {
@@ -17,9 +18,12 @@ export function PlotHeader({ plot }: { plot: Plot }) {
         <ChevronLeft aria-hidden className="size-4" />
         All plots
       </Link>
-      <h1 className="text-3xl font-extrabold tracking-tight sm:text-4xl">
-        {plot.name}
-      </h1>
+      <div className="flex items-start justify-between gap-3">
+        <h1 className="text-3xl font-extrabold tracking-tight sm:text-4xl">
+          {plot.name}
+        </h1>
+        <DeletePlotButton plotId={plot.id} plotName={plot.name} />
+      </div>
       <p className="text-sm text-muted-foreground">
         <span className="font-medium text-primary">
           {cropLabel(plot.crop_id)}
