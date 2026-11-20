@@ -8,8 +8,10 @@ import type { Farm, Plot } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
+type FarmPlots = { farm: Farm; plots: Plot[]; error?: ApiError };
+
 type Loaded =
-  | { ok: true; farms: Farm[]; plotsByFarm: Plot[][] }
+  | { ok: true; farms: FarmPlots[] }
   | { ok: false; error: ApiError; what: string };
 
 async function load(): Promise<Loaded> {
@@ -20,18 +22,33 @@ async function load(): Promise<Loaded> {
     if (e instanceof ApiError) return { ok: false, error: e, what: "farms" };
     throw e;
   }
-  try {
-    const plotsByFarm = await Promise.all(farms.map((f) => listPlots(f.id)));
-    return { ok: true, farms, plotsByFarm };
-  } catch (e) {
-    if (e instanceof ApiError) return { ok: false, error: e, what: "plots" };
-    throw e;
-  }
+  // One farm's plots failing must not hide the other farms.
+  const results = await Promise.allSettled(farms.map((f) => listPlots(f.id)));
+  return {
+    ok: true,
+    farms: farms.map((farm, i) => {
+      const result = results[i];
+      if (result.status === "fulfilled") return { farm, plots: result.value };
+      if (result.reason instanceof ApiError) {
+        return { farm, plots: [], error: result.reason };
+      }
+      throw result.reason;
+    }),
+  };
 }
 
-export default async function Home() {
+async function Farms() {
   const data = await load();
+  if (!data.ok) return <ErrorPanel error={data.error} what={data.what} />;
+  if (data.farms.length === 0) {
+    return <p className="text-muted-foreground">No farms yet.</p>;
+  }
+  return data.farms.map(({ farm, plots, error }) => (
+    <FarmSection key={farm.id} farm={farm} plots={plots} error={error} />
+  ));
+}
 
+export default function Home() {
   return (
     <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-8 px-4 py-10 sm:py-14">
       <header className="flex flex-col gap-3">
@@ -52,15 +69,11 @@ export default async function Home() {
         </Suspense>
       </header>
 
-      {!data.ok ? (
-        <ErrorPanel error={data.error} what={data.what} />
-      ) : data.farms.length === 0 ? (
-        <p className="text-muted-foreground">No farms yet.</p>
-      ) : (
-        data.farms.map((farm, i) => (
-          <FarmSection key={farm.id} farm={farm} plots={data.plotsByFarm[i]} />
-        ))
-      )}
+      <Suspense
+        fallback={<p className="text-muted-foreground">Loading farms…</p>}
+      >
+        <Farms />
+      </Suspense>
     </main>
   );
 }

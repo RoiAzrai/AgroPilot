@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { describeToday, formatFetchedAt, formatMinutes } from "./recommendation";
+import {
+  describeSeason,
+  describeToday,
+  formatFetchedAt,
+  formatMinutes,
+} from "./recommendation";
 import type { DayOut, Plot } from "./types";
 
 const day = (over: Partial<DayOut>): DayOut => ({
@@ -63,4 +68,23 @@ test("describeToday: ended wins over run_minutes", () => {
 test("formatFetchedAt", () => {
   assert.equal(formatFetchedAt("2026-11-18T11:35:00Z"), "2026-11-18 11:35 UTC");
   assert.equal(formatFetchedAt("yesterday"), "yesterday");
+});
+
+test("describeSeason: every stage", () => {
+  assert.deepEqual(describeSeason("not_planted"), {
+    label: "Not planted yet",
+    kind: "not_planted",
+  });
+  for (const stage of ["ini", "dev", "mid", "late"] as const) {
+    assert.deepEqual(describeSeason(stage), { label: "Growing", kind: "growing" });
+  }
+  assert.deepEqual(describeSeason("ended"), {
+    label: "Season ended",
+    kind: "ended",
+  });
+});
+
+test("describeSeason: an unknown stage gives null", () => {
+  assert.equal(describeSeason("harvest"), null);
+  assert.equal(describeSeason(""), null);
 });

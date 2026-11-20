@@ -1,6 +1,6 @@
 // Pure helpers for the plot page. No server imports: `import type` only, so
 // the unit test runs with `npm test` (tsx), without a build step.
-import type { DayOut, Plot } from "./types";
+import type { DayOut, Plot, Stage } from "./types";
 
 export type Recommendation = {
   kind: "water" | "skip" | "not_planted" | "ended";
@@ -61,4 +61,25 @@ export function formatFetchedAt(value: string): string {
 // Days outside the season have no Kc, bucket or irrigation to show.
 export function isInSeason(day: DayOut): boolean {
   return day.stage !== "ended" && day.stage !== "not_planted";
+}
+
+export type SeasonKind = "not_planted" | "growing" | "ended";
+
+// Short label for a plot card. An unknown stage gives null: no label, no guess.
+export function describeSeason(
+  stage: Stage | string,
+): { label: string; kind: SeasonKind } | null {
+  switch (stage) {
+    case "not_planted":
+      return { label: "Not planted yet", kind: "not_planted" };
+    case "ini":
+    case "dev":
+    case "mid":
+    case "late":
+      return { label: "Growing", kind: "growing" };
+    case "ended":
+      return { label: "Season ended", kind: "ended" };
+    default:
+      return null;
+  }
 }

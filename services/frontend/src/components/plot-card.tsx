@@ -1,5 +1,10 @@
+import { Suspense } from "react";
 import Link from "next/link";
 import { ChevronRight } from "lucide-react";
+import {
+  SeasonBadge,
+  SeasonBadgeSkeleton,
+} from "@/components/season-badge";
 import type { Plot } from "@/lib/types";
 
 function cropLabel(cropId: string): string {
@@ -20,7 +25,12 @@ export function PlotCard({ plot }: { plot: Plot }) {
         <p className="text-sm font-medium text-primary">
           {cropLabel(plot.crop_id)}
         </p>
-        <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-sm">
+        <div className="mt-2 flex h-6 items-center">
+          <Suspense fallback={<SeasonBadgeSkeleton />}>
+            <SeasonBadge plotId={plot.id} />
+          </Suspense>
+        </div>
+        <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-sm">
           <dt className="text-muted-foreground">Area</dt>
           <dd>{plot.area_m2.toLocaleString("en-US")} m²</dd>
           <dt className="text-muted-foreground">Planted</dt>
