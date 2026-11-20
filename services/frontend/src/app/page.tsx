@@ -4,8 +4,8 @@ import { ErrorPanel } from "@/components/error-panel";
 import { FarmSection } from "@/components/farm-section";
 import { StatusLine } from "@/components/status-line";
 import { ApiError } from "@/lib/errors";
-import { listFarms, listPlots } from "@/lib/registry";
-import type { Farm, Plot } from "@/lib/types";
+import { listCrops, listEmitters, listFarms, listPlots, listSoils } from "@/lib/registry";
+import type { Catalogs, Farm, Plot } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -38,14 +38,41 @@ async function load(): Promise<Loaded> {
   };
 }
 
+// Loaded once per page render and shared by every farm's "+ Plot" dialog.
+// null if any catalogue fails: the dialog then shows an error instead of guessing.
+async function loadCatalogs(): Promise<Catalogs | null> {
+  const [crops, soils, emitters] = await Promise.allSettled([
+    listCrops(),
+    listSoils(),
+    listEmitters(),
+  ]);
+  for (const r of [crops, soils, emitters]) {
+    if (r.status === "rejected" && !(r.reason instanceof ApiError)) throw r.reason;
+  }
+  if (
+    crops.status === "fulfilled" &&
+    soils.status === "fulfilled" &&
+    emitters.status === "fulfilled"
+  ) {
+    return { crops: crops.value, soils: soils.value, emitters: emitters.value };
+  }
+  return null;
+}
+
 async function Farms() {
-  const data = await load();
+  const [data, catalogs] = await Promise.all([load(), loadCatalogs()]);
   if (!data.ok) return <ErrorPanel error={data.error} what={data.what} />;
   if (data.farms.length === 0) {
     return <p className="text-muted-foreground">No farms yet.</p>;
   }
   return data.farms.map(({ farm, plots, error }) => (
-    <FarmSection key={farm.id} farm={farm} plots={plots} error={error} />
+    <FarmSection
+      key={farm.id}
+      farm={farm}
+      plots={plots}
+      error={error}
+      catalogs={catalogs}
+    />
   ));
 }
 

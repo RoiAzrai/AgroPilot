@@ -4,11 +4,17 @@ import { revalidatePath } from "next/cache";
 import {
   deleteFailureToResult,
   failureToResult,
+  plotFailureToResult,
   type ActionResult,
 } from "@/lib/action-result";
 import { ApiError } from "@/lib/errors";
-import { createFarm, deletePlot } from "@/lib/registry";
-import { farmSchema } from "@/lib/schemas";
+import { createFarm, createPlot, deletePlot } from "@/lib/registry";
+import {
+  farmSchema,
+  firstIssuePerField,
+  plotInputFromFormData,
+  plotSchema,
+} from "@/lib/schemas";
 import type { Farm } from "@/lib/types";
 
 export async function createFarmAction(
@@ -30,6 +36,29 @@ export async function createFarmAction(
     return { ok: true, data: farm };
   } catch (e) {
     if (e instanceof ApiError) return failureToResult(e);
+    throw e;
+  }
+}
+
+export async function createPlotAction(
+  _prev: ActionResult<{ id: string }> | null,
+  formData: FormData,
+): Promise<ActionResult<{ id: string }>> {
+  const parsed = plotSchema.safeParse(plotInputFromFormData(formData));
+  if (!parsed.success) {
+    return {
+      ok: false,
+      kind: "validation",
+      message: "Please fix the highlighted fields.",
+      fieldErrors: firstIssuePerField(parsed.error),
+    };
+  }
+  try {
+    const plot = await createPlot(parsed.data);
+    revalidatePath("/");
+    return { ok: true, data: { id: plot.id } };
+  } catch (e) {
+    if (e instanceof ApiError) return plotFailureToResult(e);
     throw e;
   }
 }

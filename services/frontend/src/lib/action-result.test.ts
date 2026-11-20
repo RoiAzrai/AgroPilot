@@ -4,6 +4,7 @@ import {
   deleteFailureToResult,
   failureToResult,
   parseValidationDetail,
+  plotFailureToResult,
 } from "./action-result";
 
 const http = (status: number, detail = "x") => ({
@@ -82,4 +83,53 @@ test("delete 503 / timeout stay errors", () => {
   const b = deleteFailureToResult({ kind: "timeout", detail: "x" });
   assert.ok(!a.ok && a.kind === "unavailable");
   assert.ok(!b.ok && b.kind === "timeout");
+});
+
+test("plotFailureToResult: 409 -> name field", () => {
+  const r = plotFailureToResult(http(409, "Record already exists"));
+  assert.ok(!r.ok);
+  assert.equal(r.kind, "validation");
+  assert.deepEqual(r.fieldErrors, {
+    name: "A plot with this name already exists in this farm",
+  });
+});
+
+test("plotFailureToResult: Unknown crop/soil/emitter -> that select", () => {
+  for (const [detail, field] of [
+    ["Unknown crop", "crop_id"],
+    ["Unknown soil", "soil_id"],
+    ["Unknown emitter", "emitter_id"],
+  ]) {
+    const r = plotFailureToResult(http(422, detail));
+    assert.ok(!r.ok);
+    assert.deepEqual(r.fieldErrors, { [field]: detail });
+  }
+});
+
+test("plotFailureToResult: Unknown farm -> form message", () => {
+  const r = plotFailureToResult(http(422, "Unknown farm"));
+  assert.ok(!r.ok);
+  assert.equal(r.message, "This farm no longer exists.");
+  assert.equal(r.fieldErrors, undefined);
+});
+
+test("plotFailureToResult: other 422 falls back to body.<field> parsing", () => {
+  const r = plotFailureToResult(http(422, "body.area_m2: Input should be > 0"));
+  assert.ok(!r.ok);
+  assert.deepEqual(r.fieldErrors, { area_m2: "Input should be > 0" });
+});
+
+test("plotFailureToResult: 503, 500, network and timeout fall back", () => {
+  for (const f of [
+    http(503),
+    http(500),
+    { kind: "network" as const, detail: "x" },
+  ]) {
+    const r = plotFailureToResult(f);
+    assert.ok(!r.ok);
+    assert.equal(r.kind, "unavailable");
+  }
+  const t = plotFailureToResult({ kind: "timeout", detail: "x" });
+  assert.ok(!t.ok);
+  assert.equal(t.kind, "timeout");
 });

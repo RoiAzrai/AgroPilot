@@ -58,3 +58,37 @@ export function deleteFailureToResult(f: FailureLike): ActionResult {
   }
   return failureToResult(f);
 }
+
+const UNKNOWN_REFERENCE: Record<string, string> = {
+  "Unknown crop": "crop_id",
+  "Unknown soil": "soil_id",
+  "Unknown emitter": "emitter_id",
+};
+
+// Plot create: the registry's 409 and "Unknown ..." 422s belong to one field each.
+export function plotFailureToResult(f: FailureLike): ActionResult<never> {
+  if (f.kind === "http" && f.status === 409) {
+    return {
+      ok: false,
+      kind: "validation",
+      message: "Please fix the highlighted fields.",
+      fieldErrors: { name: "A plot with this name already exists in this farm" },
+    };
+  }
+  if (f.kind === "http" && f.status === 422) {
+    const detail = f.detail.trim();
+    if (detail === "Unknown farm") {
+      return { ok: false, kind: "rejected", message: "This farm no longer exists." };
+    }
+    const field = UNKNOWN_REFERENCE[detail];
+    if (field) {
+      return {
+        ok: false,
+        kind: "validation",
+        message: "Please fix the highlighted fields.",
+        fieldErrors: { [field]: detail },
+      };
+    }
+  }
+  return failureToResult(f);
+}

@@ -21,6 +21,7 @@ export type Plot = {
 export type Crop = { id: string; name: string };
 export type Soil = { id: string; name: string; available_water_mm_per_m: number };
 export type Emitter = { id: string; name: string; flow_lph: number };
+export type Catalogs = { crops: Crop[]; soils: Soil[]; emitters: Emitter[] };
 
 // Planner (services/planner-service/models.py, engine/season.py)
 export type Stage = "not_planted" | "ini" | "dev" | "mid" | "late" | "ended";

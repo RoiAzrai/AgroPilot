@@ -1,6 +1,7 @@
 import "server-only";
 import { config } from "./config";
 import { serviceFetch } from "./http";
+import type { PlotPayload } from "./schemas";
 import type { Crop, Emitter, Farm, Plot, Soil } from "./types";
 
 function call<T>(
@@ -31,5 +32,7 @@ export const listSoils = () => get<Soil[]>("/v1/soils");
 export const listEmitters = () => get<Emitter[]>("/v1/emitters");
 export const createFarm = (name: string) =>
   call<Farm>("/v1/farms", { method: "POST", body: { name } });
+export const createPlot = (payload: PlotPayload) =>
+  call<Plot>("/v1/plots", { method: "POST", body: payload });
 export const deletePlot = (id: string) =>
   call<void>(`/v1/plots/${encodeURIComponent(id)}`, { method: "DELETE" });
