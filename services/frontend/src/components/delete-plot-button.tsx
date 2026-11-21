@@ -76,7 +76,7 @@ export function DeletePlotButton({
           <AlertDialogCancel
             ref={cancelRef}
             disabled={pending}
-            className="h-11 w-full sm:h-8 sm:w-auto"
+            className="h-11 w-full sm:w-auto"
           >
             Cancel
           </AlertDialogCancel>
@@ -84,7 +84,7 @@ export function DeletePlotButton({
             variant="destructive"
             disabled={pending}
             onClick={onDelete}
-            className="h-11 w-full sm:h-8 sm:w-auto"
+            className="h-11 w-full sm:w-auto"
           >
             {pending ? "Deleting…" : "Delete"}
           </AlertDialogAction>

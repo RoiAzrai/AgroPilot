@@ -89,15 +89,6 @@ export default function Home() {
         <p className="max-w-prose text-lg text-muted-foreground">
           When to water each plot, and for how long.
         </p>
-        <Suspense
-          fallback={
-            <p className="text-sm text-muted-foreground">
-              Checking services…
-            </p>
-          }
-        >
-          <StatusLine />
-        </Suspense>
       </header>
 
       <Suspense
@@ -105,6 +96,16 @@ export default function Home() {
       >
         <Farms />
       </Suspense>
+
+      <footer className="mt-4">
+        <Suspense
+          fallback={
+            <p className="text-sm text-muted-foreground">Checking services…</p>
+          }
+        >
+          <StatusLine />
+        </Suspense>
+      </footer>
     </main>
   );
 }

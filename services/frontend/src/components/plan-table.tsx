@@ -92,7 +92,7 @@ export function PlanTable({ days }: { days: DayOut[] }) {
               <th scope="col" className="px-4 py-3 font-medium">Date</th>
               <th scope="col" className="px-4 py-3 font-medium">Stage</th>
               <th scope="col" className="px-4 py-3 text-right font-medium">Run time</th>
-              <th scope="col" className="px-4 py-3 text-right font-medium">Litres</th>
+              <th scope="col" className="px-4 py-3 text-right font-medium">Litres (L)</th>
               <th scope="col" className="px-4 py-3 text-right font-medium">ET0 (mm)</th>
               <th scope="col" className="px-4 py-3 text-right font-medium">Rain (mm)</th>
               <th scope="col" className="px-4 py-3 text-right font-medium">Kc</th>

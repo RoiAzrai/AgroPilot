@@ -120,25 +120,30 @@ export function BucketPanel({
           {full
             ? "Assumed bucket: 100% (full)"
             : `Assumed bucket: ${formatBucketPercent(bucketStart)}`}
-          {!full && irrigated !== null && ` · from irrigation on ${irrigated}`}
+          {!full && irrigated !== null && (
+            <>
+              {"\u00a0· from irrigation on "}
+              <span className="whitespace-nowrap">{irrigated}</span>
+            </>
+          )}
+          <span aria-hidden>{"\u00a0·"}</span>
         </span>
-        <span aria-hidden>·</span>
-        <button
-          type="button"
-          className={linkButton}
-          aria-expanded={open}
-          aria-controls={panelId}
-          onClick={() => setOpen((o) => !o)}
-        >
-          {open ? "Close" : "Change"}
-        </button>
+        <span className="whitespace-nowrap">
+          <button
+            type="button"
+            className={linkButton}
+            aria-expanded={open}
+            aria-controls={panelId}
+            onClick={() => setOpen((o) => !o)}
+          >
+            {open ? "Close" : "Change"}
+          </button>
+          {!full && <span aria-hidden>{"\u00a0·"}</span>}
+        </span>
         {!full && (
-          <>
-            <span aria-hidden>·</span>
-            <Link href={pathname} replace scroll={false} className={linkButton}>
-              Reset
-            </Link>
-          </>
+          <Link href={pathname} replace scroll={false} className={linkButton}>
+            Reset
+          </Link>
         )}
       </p>
 

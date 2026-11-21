@@ -27,7 +27,7 @@ export function FarmSection({
         {!empty && <AddPlotDialog farm={farm} catalogs={catalogs} />}
       </div>
       {error ? (
-        <ErrorPanel error={error} what="plots" />
+        <ErrorPanel error={error} what="plots" detailed />
       ) : empty ? (
         <div className="flex flex-col items-start gap-3">
           <p className="text-muted-foreground">No plots yet.</p>
