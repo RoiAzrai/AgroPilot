@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import db
-from conftest import assert_problem
+from conftest import assert_problem, sqlite_url
 from main import app
 from routers import farms
 from test_farms import DEMO_COOPERATIVE
@@ -46,7 +46,7 @@ def assert_internal_error(response) -> dict:
 @pytest.fixture
 def missing_db(tmp_path: Path, monkeypatch) -> Path:
     path = tmp_path / "missing.db"
-    monkeypatch.setenv("REGISTRY_DB_PATH", str(path))
+    monkeypatch.setenv("DATABASE_URL", sqlite_url(path))
     return path
 
 
@@ -69,28 +69,29 @@ def test_health_does_not_need_the_database(missing_db):
 def test_corrupt_database_is_503(tmp_path: Path, monkeypatch):
     path = tmp_path / "registry.db"
     path.write_bytes(b"this is not a sqlite database " * 200)
-    monkeypatch.setenv("REGISTRY_DB_PATH", str(path))
+    monkeypatch.setenv("DATABASE_URL", sqlite_url(path))
     with TestClient(app) as client:
         response = client.get("/v1/farms")
     assert_unavailable(response)
     assert "not a database" not in response.text
 
 
-def test_locked_database_is_503(client, db_file, monkeypatch):
-    monkeypatch.setattr(db, "BUSY_TIMEOUT_SECONDS", 0.05)
-    holder = sqlite3.connect(db_file, isolation_level=None)
-    holder.execute("BEGIN EXCLUSIVE")
-    try:
-        response = client.post("/v1/farms", json={"name": "Blocked farm"})
-    finally:
-        holder.rollback()
-        holder.close()
-    assert_unavailable(response)
-    assert "locked" not in response.text
-    assert [farm["name"] for farm in client.get("/v1/farms").json()] == [
-        "Demo cooperative",
-        "East farm",
-    ]
+def test_locked_database_is_503(db_file, monkeypatch):
+    monkeypatch.setenv("DB_BUSY_TIMEOUT_SECONDS", "0.05")
+    with TestClient(app) as client:
+        holder = sqlite3.connect(db_file, isolation_level=None)
+        holder.execute("BEGIN EXCLUSIVE")
+        try:
+            response = client.post("/v1/farms", json={"name": "Blocked farm"})
+        finally:
+            holder.rollback()
+            holder.close()
+        assert_unavailable(response)
+        assert "locked" not in response.text
+        assert [farm["name"] for farm in client.get("/v1/farms").json()] == [
+            "Demo cooperative",
+            "East farm",
+        ]
 
 
 def test_unavailable_is_logged_for_operations(missing_db, caplog):

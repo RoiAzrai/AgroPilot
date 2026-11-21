@@ -1,16 +1,17 @@
-import sqlite3
 from typing import Annotated
 from uuid import uuid4
 
+import sqlalchemy.exc
 from fastapi import APIRouter, Depends, Response
+from sqlalchemy import Connection, RowMapping, text
 
-from db import get_db
+from db import get_db, is_foreign_key_violation
 from errors import conflict, not_found
 from models import Farm, FarmCreate, FarmUpdate, canonical_uuid, merge
 
 router = APIRouter(prefix="/v1/farms", tags=["farms"])
 
-Db = Annotated[sqlite3.Connection, Depends(get_db)]
+Db = Annotated[Connection, Depends(get_db)]
 
 
 def _farm_id(raw: str) -> str:
@@ -20,8 +21,10 @@ def _farm_id(raw: str) -> str:
     return farm_id
 
 
-def _get_farm(conn: sqlite3.Connection, farm_id: str) -> sqlite3.Row:
-    row = conn.execute("SELECT id, name FROM farms WHERE id = ?", (farm_id,)).fetchone()
+def _get_farm(conn: Connection, farm_id: str) -> RowMapping:
+    row = conn.execute(
+        text("SELECT id, name FROM farms WHERE id = :id"), {"id": farm_id}
+    ).mappings().fetchone()
     if row is None:
         raise not_found("Farm not found")
     return row
@@ -30,14 +33,17 @@ def _get_farm(conn: sqlite3.Connection, farm_id: str) -> sqlite3.Row:
 @router.post("", status_code=201, response_model=Farm)
 def create_farm(body: FarmCreate, conn: Db) -> Farm:
     farm = Farm(id=uuid4(), name=body.name)
-    with conn:
-        conn.execute("INSERT INTO farms (id, name) VALUES (?, ?)", (str(farm.id), farm.name))
+    conn.execute(
+        text("INSERT INTO farms (id, name) VALUES (:id, :name)"),
+        {"id": str(farm.id), "name": farm.name},
+    )
+    conn.commit()
     return farm
 
 
 @router.get("", response_model=list[Farm])
 def list_farms(conn: Db) -> list[Farm]:
-    rows = conn.execute("SELECT id, name FROM farms ORDER BY rowid").fetchall()
+    rows = conn.execute(text("SELECT id, name FROM farms ORDER BY rowid")).mappings().fetchall()
     return [Farm(**row) for row in rows]
 
 
@@ -50,10 +56,11 @@ def get_farm(farm_id: str, conn: Db) -> Farm:
 def update_farm(farm_id: str, body: FarmUpdate, conn: Db) -> Farm:
     farm_id = _farm_id(farm_id)
     updated = merge(FarmCreate, _get_farm(conn, farm_id), body.model_dump(exclude_unset=True))
-    with conn:
-        changed = conn.execute(
-            "UPDATE farms SET name = ? WHERE id = ?", (updated.name, farm_id)
-        ).rowcount
+    changed = conn.execute(
+        text("UPDATE farms SET name = :name WHERE id = :id"),
+        {"name": updated.name, "id": farm_id},
+    ).rowcount
+    conn.commit()
     if changed == 0:
         raise not_found("Farm not found")
     return Farm(id=farm_id, name=updated.name)
@@ -63,11 +70,13 @@ def update_farm(farm_id: str, body: FarmUpdate, conn: Db) -> Farm:
 def delete_farm(farm_id: str, conn: Db) -> Response:
     farm_id = _farm_id(farm_id)
     try:
-        with conn:
-            deleted = conn.execute("DELETE FROM farms WHERE id = ?", (farm_id,)).rowcount
-    except sqlite3.IntegrityError as exc:
+        deleted = conn.execute(
+            text("DELETE FROM farms WHERE id = :id"), {"id": farm_id}
+        ).rowcount
+        conn.commit()
+    except sqlalchemy.exc.IntegrityError as exc:
         # The only foreign keys pointing at farms are plots.farm_id.
-        if "FOREIGN KEY" not in str(exc):
+        if not is_foreign_key_violation(exc.orig):
             raise
         raise conflict("Farm has plots; delete or move them first") from exc
     if deleted == 0:

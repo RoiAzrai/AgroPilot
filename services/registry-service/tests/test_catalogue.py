@@ -109,3 +109,15 @@ def test_catalogue_unchanged_after_write_attempts(client, db_file):
     assert client.get("/v1/crops").json() == CROPS
     assert client.get("/v1/soils").json() == SOILS
     assert client.get("/v1/emitters").json() == EMITTERS
+
+
+@pytest.mark.parametrize(
+    "path, detail",
+    [
+        ("/v1/crops/tomato%00", "Crop not found"),
+        ("/v1/soils/sand%00", "Soil not found"),
+        ("/v1/emitters/dripnet-pc-1.0%00", "Emitter not found"),
+    ],
+)
+def test_catalogue_path_id_with_nul_is_404(client, path, detail):
+    assert assert_problem(client.get(path), 404, "NOT_FOUND")["detail"] == detail

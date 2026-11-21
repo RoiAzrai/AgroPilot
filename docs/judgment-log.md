@@ -399,3 +399,342 @@ and why.
   meets NFR-1.1 at 500 times the spec's data volume (worst p95 80.1 ms), confirmed
   independently by k6, and collapses at 10,000 plots. Recommendations for the PR,
   not to implement here: pagination for list endpoints, and more than one worker.
+
+## 25. List order on PostgreSQL: a `rowid` identity column
+- **Agent suggested:** Six queries return lists in insertion order with
+  `ORDER BY rowid`, and PostgreSQL has no `rowid`. Give each PostgreSQL table a
+  `rowid BIGINT GENERATED ALWAYS AS IDENTITY` column, so the same SQL runs on
+  both databases. Alternative: `ORDER BY id`.
+- **I decided:** Accepted the `rowid` column. The schema-comparison test allows
+  `rowid` as the only difference between the PostgreSQL schema and
+  `seed_registry.sh`, and fails on anything else.
+- **Why:** Keeping list order exactly as today matters more than a perfectly
+  identical schema. `ORDER BY id` would reorder every list, because farm and
+  plot ids are random UUIDs. The column is never returned, because every
+  `SELECT` names its columns.
+
+## 26. Missing PostgreSQL database and authorization errors are 503
+- **Agent suggested:** Classify PostgreSQL errors by SQLSTATE: no connection,
+  classes 08, 53, 57, 58, and 55P03, 25006, XX001, XX002 are 503. Asked whether
+  a missing database (3D000) and authorization errors (class 28) should be 503
+  or 500.
+- **I decided:** 503 with `Retry-After`, and a warning log that includes the
+  SQLSTATE.
+- **Why:** Same rule as P1 (entry 14), where a missing SQLite file is 503: the
+  fix is in the environment (create the database, fix the password or grants),
+  not in the code. The log gives operations the exact cause.
+
+## 27. NUL characters in names are rejected with 422
+- **Agent suggested:** Flagged that the `Name` type accepts any non-empty string,
+  including the NUL character (`\x00`). SQLite stores it, but PostgreSQL `TEXT`
+  cannot, so the same request would be 201 on SQLite and 500 on PostgreSQL.
+- **I decided:** Reject NUL in name fields (farm and plot names, create and
+  PATCH) with `422 VALIDATION` on both databases, with a test. This is the one
+  deliberate behavior change in the PostgreSQL move, and the PR mentions it.
+- **Why:** The service must behave the same on both databases, and a name with
+  a NUL character is not a real name. A 500 would report a client mistake as a
+  server bug. Rejecting it on both databases keeps them identical, at the cost
+  of one change from P1, where SQLite accepted it.
+
+## 28. Lock waits, deadlocks and a full connection pool on PostgreSQL are 503
+- **Agent suggested:** PostgreSQL waits for a lock forever by default, so a
+  request blocked by a lock would never answer, while in P1 a locked SQLite file
+  gives 503 after 5 s. Set PostgreSQL's `lock_timeout` from the same
+  `DB_BUSY_TIMEOUT_SECONDS`. Also, when every pooled connection is busy,
+  SQLAlchemy raises `TimeoutError` after 30 s (a hardcoded default), which would
+  become a 500.
+- **I decided:** `lock_timeout` = `DB_BUSY_TIMEOUT_SECONDS` (5 s). A full pool
+  returns 503 with `Retry-After`, after `DB_POOL_TIMEOUT_SECONDS` (5 s), both
+  set in `.env`. No general `statement_timeout`. A deadlock (SQLSTATE `40P01`)
+  is also 503: it is a lock conflict, like `SQLITE_LOCKED` in P1, and a retry
+  fixes it.
+- **Why:** Both are the environment being busy, not a bug, so the P1 rule
+  (entry 14) gives 503: waiting helps. A request that hangs without limit gives
+  the client no answer at all, and timeouts must come from configuration, not
+  from code or library defaults.
+
+## 29. One PostgreSQL role for setup and service; insufficient privilege is 503
+- **Agent suggested:** If `seed_db.py` runs as one role and the service as
+  another, every request fails with SQLSTATE `42501` (insufficient privilege),
+  which the classification table mapped to 500. Use one role that owns the
+  tables for both, and treat `42501` like the authorization errors of class 28.
+- **I decided:** One role owns the tables and is used by both `seed_db.py` and
+  the service; `seed_db.py` runs no `GRANT`, and the setup docs say so. `42501`
+  returns 503 with a warning log that includes the SQLSTATE.
+- **Why:** One role keeps setup to one command with no permission logic.
+  A missing grant is fixed in the environment, not in the code, the same rule as
+  entry 26.
+
+## 30. Unknown keys in `.env` stop the service at startup
+- **Agent suggested:** The task reviewer flagged that `Settings` rejects any key
+  it does not know, so an unrelated key in `.env` (for example `LOG_LEVEL`)
+  crashes startup, and suggested `extra="ignore"`.
+- **I decided:** Keep `Settings` strict (pydantic-settings' default). `.env.example`
+  says that unknown keys stop the service at startup.
+- **Why:** A typo such as `DB_BUSY_TIMEOUT_SECOND` must fail loudly. With
+  `extra="ignore"` it would be silently dropped and the service would run with
+  the default value, which is much harder to notice. A new setting is added as a
+  field in `config.py` anyway.
+
+## 31. "No connection" on PostgreSQL means `OperationalError` only
+- **Agent suggested:** The task reviewer noted that the approved table mapped a
+  psycopg `InterfaceError` with no SQLSTATE to 503, like `OperationalError`. But
+  psycopg also raises `InterfaceError` for client-side misuse, such as using a
+  closed cursor.
+- **I decided:** Only `psycopg.OperationalError` with no SQLSTATE ("no
+  connection at all": server down, connection refused, DNS, connect timeout) is
+  503. `InterfaceError` with no SQLSTATE is 500, like the other client-side
+  errors.
+- **Why:** Misusing the driver is a bug in our code, and retrying will never fix
+  it. Returning 503 would hide it as an outage, the same rule as entry 14. The
+  smoke test showed that a real refused connection is an `OperationalError`
+  (`SQLSTATE=None connection failed: ... Connection refused`), so outages are
+  still 503.
+
+## 32. weather-service: a forecast older than 24 h is never served
+- **Agent suggested:** The spec asks the service to decide how old a forecast
+  can be before it stops serving it even as stale.
+- **I decided:** 24 hours (`FORECAST_MAX_STALE_SECONDS`). Older than that, the
+  service answers 503 `UNAVAILABLE`, never the old forecast. The service asks
+  the provider for 8 days, so a forecast up to 24 h old still has 7 full days
+  after dropping the day that has passed.
+- **Why:** Irrigation decisions are daily. After a day, the forecast may miss a
+  change such as new rain, and a plan built on it could water a field that
+  rain already watered, or skip one that needs water.
+
+## 33. weather-service: a pause after a failed refresh (deviation from FR-2.6)
+- **Agent suggested:** Per the letter of FR-2.6, every request after the 3
+  fresh hours retries the provider twice before serving stale. While the
+  provider is down, every request then waits for three attempts, and the load
+  on the provider grows exactly when it is in trouble. Suggested a pause.
+- **I decided:** After a failed refresh of a cell, for `FAILURE_PAUSE_SECONDS`
+  (default 60), requests for that cell get the stale forecast at once, or a 503
+  if there is no usable stale, without calling the provider. During the pause,
+  the 503's `Retry-After` is the seconds left in it. After the pause, one
+  request tries again (single-flight).
+- **Why:** The planner has its own timeout. If every request waited for three
+  attempts before serving stale, the planner would give up first and FR-2.13 (a
+  stale forecast still gives a plan) would break. This is a deliberate deviation
+  from the letter of FR-2.6, also written in the design and the service README.
+
+## 34. weather-service: one refresh deadline bounds all attempts and waiters
+- **Agent suggested:** Even without the pause, the first failure of a cell costs
+  three attempts plus backoff, possibly longer than the planner waits. Bound the
+  whole refresh by one deadline.
+- **I decided:** `REFRESH_DEADLINE_SECONDS` (default 5) bounds all attempts of a
+  refresh together, and requests waiting on the same refresh (single-flight)
+  wait no longer than the same deadline. When it runs out, the service falls
+  back to stale or 503 at once. The per-attempt timeout (default 1.5 s) must be
+  smaller than the deadline; otherwise the service refuses to start. The
+  planner's timeout will be set above this deadline.
+- **Why:** One number gives the worst case the planner can plan around. An
+  attempt timeout as long as the deadline would eat the whole budget, and the
+  retries would never happen.
+
+## 35. weather-service: cell center to the provider; time-zone name for "today"
+- **Agent suggested:** Two fixes to the first decisions: (1) asking the provider
+  for the exact point of the first request makes a cell's forecast depend on
+  who asked first; (2) keeping only the provider's UTC offset shifts "today" by
+  an hour around midnight when a DST change happens while the forecast is kept.
+- **I decided:** The provider is always asked for the cell's center (floor to
+  0.1°, plus 0.05), clamped to the valid range at the edges (lat 90 stays 90).
+  The service keeps the time-zone name the provider returns and computes the
+  point's local "today" with `zoneinfo`. The response still echoes the
+  client's lat/lon.
+- **Why:** A cell's content must not depend on request order, and "today" must
+  stay right across DST changes, because serving yesterday as today is one of
+  the errors this service exists to prevent.
+
+## 36. weather-service: Retry-After right after a failed refresh is the pause length
+- **Agent suggested:** The first implementation gave the request whose own
+  refresh had just failed `Retry-After: RETRY_AFTER_SECONDS` (5), and only later
+  requests during the pause got the seconds left in it, because two earlier
+  tests (written before the pause existed) expected 5.
+- **I decided:** That request gets the seconds left in the pause, which right
+  after the failure is the full `FAILURE_PAUSE_SECONDS` (60). The two tests
+  change from 5 to 60. A waiter that times out at the very start of a refresh,
+  in the same moment, before the pause is set, may still get 5: accepted.
+- **Why:** Once a refresh has failed, the pause has started and nothing will
+  change for 60 seconds. "Retry in 5" would be wrong: a client that retried
+  after 5 seconds would only get another 503 without a provider call.
+
+## 37. weather-service: a bug in our code never starts the pause
+- **Agent suggested:** The task reviewer found that an unexpected exception (a
+  bug, not a provider failure) also started the 60-second pause, so for a minute
+  the bug was hidden behind stale answers or 503s.
+- **I decided:** The pause starts only when all provider attempts failed or the
+  refresh deadline ran out. Any other exception propagates and stays a 500 on
+  every request; the next request tries again. A test covers it.
+- **Why:** Same rule as the registry (entry 14): a bug must not be hidden as an
+  outage. Retrying cannot fix it, and a 503 would invite retries and hide the
+  real cause.
+
+## 38. weather-service: `past_days` (deviation from FR-2.3)
+- **Agent suggested:** For the planner's "suggest and confirm" bucket start
+  (the bucket level from the date of the last irrigation), add an optional
+  `past_days` (0-92) to `GET /v1/forecast`, keep one cache entry per cell that
+  always holds 92 past + 8 forecast days, and treat a `null` or invalid value
+  anywhere in the 100 days as a provider failure, as FR-2.8 does for the 8 days.
+- **I decided:** `past_days` 0-92, default 0, with the same response shape;
+  `past_days=0` is the old response (except the clock case below). One entry
+  per cell, 92 + 8 days. Open-Meteo documents that requests with more than 7
+  days of data count as more than one call (example from the docs: 4 weeks =
+  3.0 calls); a conservative upper bound is ~14 calls per 100-day fetch, so
+  ~112 calls a day per cell at one refresh per 3 h, far below the free limit
+  of 10,000 a day.
+  But a bad value in a **past** day only marks the past days of that entry
+  unavailable: they are never served, `past_days > 0` gets a 503, and it is
+  not a provider failure (no retry, no pause, no stale fallback). One warning
+  is logged when the entry is parsed, not one per request. W26: that 503's
+  `Retry-After` is the seconds until the entry stops being fresh (its next
+  refresh), at least 1; during a failure pause, the seconds left in it. (First
+  decided: the default `RETRY_AFTER_SECONDS`; changed, because a client told
+  to retry in 5 s would get the same 503 for up to 3 h.) Structural problems anywhere, and a bad value in a
+  forecast day, stay provider failures. The served window must be complete
+  and contiguous; when the provider's clock is ahead around midnight, today is
+  now served from its past days with the correct date instead of a 503, also
+  with `past_days=0`, but only while the past days are available. A bad past
+  value can come back on every fetch until its date leaves the 92-day window,
+  so the planner must handle a lasting 503 for `past_days > 0`.
+- **Why:** FR-2.3 says the forecast starts today, but the planner cannot
+  suggest a bucket level without the ET0 and rain since the last irrigation.
+  An add-on must not break what worked before it: one bad value three months
+  ago must not cost a grower today's plan.
+- **Superseded (17.11, entry 39):** the past-related parts of this entry (a
+  bad past value marks all past days unavailable, `past_days > 0` gets a 503,
+  and W26's `Retry-After` for it) are replaced by W27. The rest still holds.
+
+## 39. weather-service: serve the past days that exist (W27)
+- **Found:** a real Open-Meteo check on 2026-11-17 (lat 31.25, lon 34.75,
+  `past_days=92`, `forecast_days=8`) answered 200 in 403 ms with 100 days, but
+  the 25 oldest days (2026-08-17 .. 2026-09-10) were `null` in both ET0 and
+  rain; from 2026-09-11 on every value was valid. Only 67 past days really
+  exist. Under entry 38 (W23=B) the whole past was marked unavailable, so
+  `past_days=3` got a 503 although those 3 days existed.
+- **I decided (W27):** structural problems anywhere and any invalid value in
+  the 8 forecast days stay provider failures. A past day is valid only when
+  both ET0 and rain are valid numbers. The available past is the longest run
+  of valid past days that ends on the provider's yesterday; the first invalid
+  day counting back, and everything older, is dropped and never served. If
+  yesterday is invalid, there are no past days. Not a provider failure: no
+  retry, no pause, no stale fallback. `past_days=N` (0-92) returns the
+  requested past days that are available, contiguous and ending yesterday
+  (fewer than N, possibly 0), then the forecast days, with 200. When the query
+  has `past_days > 0` the response adds `past_days_returned`; without
+  `past_days`, or with 0, the response is unchanged. No 503 for missing past
+  days, so W26 no longer applies to the past; 503 stays for forecast failures
+  with the existing `Retry-After` rules. A stale entry after midnight counts
+  the former today as a past day. One INFO line per stored entry when the past
+  is limited; DEBUG per request that gets fewer past days than asked. The
+  service had no logging setup, so INFO from its own loggers was dropped under
+  uvicorn: `main.py` now sets `provider`, `forecasts` and `main` to INFO with a
+  stderr handler (timestamp, level, logger name), leaves uvicorn's loggers
+  alone, and adds no `.env` key.
+- **Why:** the service reports facts; the planner decides what to do with
+  fewer days (for example, ask the grower instead of suggesting a bucket
+  level). A 503 hid 67 good days because 25 older ones were missing, and
+  told the client nothing it could act on.
+
+## 40. planner-service: "cannot suggest" is a 200, not an error (P4)
+- **Decided (2026-11-18):** when the bucket suggestion can't be computed
+  exactly (fewer past days than needed and the optimistic run never empties,
+  or no past days at all: I22) or the season has ended (I18), the answer is
+  `200` with `suggestion: null`, `exact: false` and a `reason`
+  (`"insufficient_past_weather"` or `"season_ended"`). Invalid input (I15:
+  a future date, before planting, more than 92 days ago, not a date) is `422`.
+- **Why:** the request was valid and every upstream answered. A 422 would
+  blame the grower's input, a 503 would invite a retry that gives the same
+  answer. "We can't know this exactly, enter the level by hand" is a correct,
+  final answer, and the frontend shows it as such.
+
+## 41. planner-service: upstream errors (P6)
+- **Decided (2026-11-18):** a registry 404 for the plot is `404 NOT_FOUND`.
+  A connection error, a timeout or a 5xx from the registry or weather is
+  `503 UPSTREAM_UNAVAILABLE`, its `detail` names the service, with
+  `Retry-After`. Any other unexpected upstream answer (other status, bad JSON,
+  a missing field, a wrong number of days, a non-finite number) is a `500`.
+  Same problem+json body as the registry and weather. No partial plan ever.
+- **Why:** FR-2.14 asks for 503 and the service name when an upstream is down
+  or slow. An answer we don't understand is not an outage: as in weather-service
+  (entry 37), a bug must not hide as "service down". And a plan built around a
+  missing number would be the "plan of zeros" FR-2.14 forbids.
+
+## 42. planner-service: timeouts, the weather one above weather's deadline (P7)
+- **Decided (2026-11-18):** `REGISTRY_TIMEOUT_SECONDS=3` and
+  `WEATHER_TIMEOUT_SECONDS=6` in `.env`. The weather timeout must stay above
+  weather's 5 s refresh deadline, checked at startup. No retries in the
+  planner (P8).
+- **Why:** when Open-Meteo is slow, weather-service spends up to its 5 s
+  deadline and then answers with a stale forecast. A planner timeout below
+  that would turn a valid stale answer into a 503 and break FR-2.13 (a stale
+  forecast still gives a plan). The registry answers in milliseconds (NFR-1.1),
+  so 3 s only catches a hung registry. Retries are weather's job, behind its
+  pause; retrying in the planner as well would multiply the wait.
+
+## 43. planner-service: a daily cap on run minutes (P11, skill I23)
+- **Decided (2026-11-18):** `MAX_DAILY_RUN_MINUTES` (default 1440, `.env`).
+  When a refill needs more, the plan irrigates the cap today and continues on
+  the following days until the bucket is full again. Goes into the skill as
+  I23.
+- **Why:** the North block (loam, tomato, Zr 0.70 → TAW 122.5 mm, RAW 49 mm;
+  emitters 1.5 × 0.4 m at 1.0 L/h = 1.67 mm/h) needs about 1,800 minutes to
+  refill once. A plan that says "run 1,800 minutes today" is physically
+  impossible, and a grower who can't follow the plan stops trusting it. No
+  case in cases.md reaches the cap, so no existing number changes.
+
+## 44. planner-service: today for the suggestion comes from one weather call (Q1)
+- **Decided (2026-11-18):** the suggestion calls weather once with
+  `days=1&past_days=92`; today is the date after the past days. The planner
+  uses only the `today − D − 1` days it needs, and `past_days_requested`
+  reports that count, not 92. A future date is checked before any call
+  against UTC+14, like the registry.
+- **Why:** only weather-service knows the point's local date, and the I15
+  rules need it. A planner clock plus a time zone key could disagree with
+  weather around midnight; two calls would double the latency. 92 past days is
+  one cached entry on weather anyway.
+
+## 45. planner-service: weather's deadline is a planner key (Q2)
+- **Decided (2026-11-18):** `WEATHER_REFRESH_DEADLINE_SECONDS=5` in `.env`
+  (strict key, in `.env.example`). At startup `WEATHER_TIMEOUT_SECONDS` must
+  be above it.
+- **Why:** the P7 check needs weather's deadline and the planner can't read
+  weather's settings. A key is explicit and can differ per environment; a
+  constant in code would hide a value that can change. The cost, two places
+  to keep in step, is written in the README.
+
+## 46. planner-service: output precision (Q3)
+- **Decided (2026-11-18):** the engine computes unrounded. `kc` is served with
+  4 decimals, `bucket_mm` and `bucket_capacity_mm` with 2, rounded half up
+  (I19 rule). `et0_mm` and `rain_mm` pass through exactly as weather sent
+  them.
+- **Why:** cases.md shows kc to 4 decimals and mm to 2-3, so a hand check
+  matches. Unrounded floats (115.60000000000001) look like a bug to a grower.
+  The planner didn't compute ET0 or rain, so it must not alter them.
+
+## 47. planner-service: a day before planting is "not_planted" (Q4)
+- **Decided (2026-11-18):** a plan day before the planting date has
+  `stage: "not_planted"`, `litres` and `run_minutes` 0, and `kc`, `bucket_mm`,
+  `bucket_capacity_mm` null, like the ended season of P2.
+- **Why:** the registry accepts a planting date up to UTC+14, so for a few
+  hours the planting date is tomorrow at the point. Calling that season day 1
+  would invent a crop that isn't there, and a 422 would blame a valid plot.
+
+## 48. planner-service: the seed stays, the README explains (Q5)
+- **Decided (2026-11-18):** the seed data is unchanged. All four seed seasons
+  have ended by 2026-11-18, so their plans are `ended`. The README says so and
+  the demo creates a new plot with `POST /v1/plots`. Requirement for stage 5:
+  the frontend shows "season ended", not "no irrigation today".
+- **Why:** FR-2.2 fixes the seed rows and registry tests may depend on them.
+  A date override on the plan would be new scope. An ended season returning
+  zeros is correct, but shown as "no irrigation" it would read as the plan of
+  zeros that FR-2.14 forbids.
+
+## 49. planner-service: order of checks in the bucket suggestion (P4, I15, I18)
+- **Decided (2026-11-18):** (1) bad date format or a date clearly in the
+  future (beyond UTC+14) → 422, before any upstream call; (2) fetch the plot
+  (404 / 503); (3) season ended → 200, `suggestion: null`, `reason:
+  "season_ended"`; (4) date before planting or more than 92 days back → 422;
+  (5) otherwise the calculation → 200.
+- **Why:** a future date is invalid input for any plot; the other checks
+  depend on the plot, so they run after it is fetched, and "no suggestion
+  because the season ended" is the true answer (I18).

@@ -131,3 +131,22 @@ def test_spec_example_body_is_still_created(client):
 def test_error_detail_names_field_and_rule(client, method):
     body = assert_rejected(client, method, {"area_m2": 0})
     assert body["detail"] == "body.area_m2: Input should be greater than 0"
+
+
+@pytest.mark.parametrize("method", ["POST", "PATCH"])
+def test_plot_name_with_nul_is_422(client, method):
+    body = assert_rejected(client, method, {"name": "a\x00b"})
+    assert "body.name" in body["detail"]
+
+
+@pytest.mark.parametrize(
+    "field, detail",
+    [
+        ("crop_id", "Unknown crop"),
+        ("soil_id", "Unknown soil"),
+        ("emitter_id", "Unknown emitter"),
+    ],
+)
+def test_catalogue_id_with_nul_is_unknown(client, field, detail):
+    body = assert_rejected(client, "POST", {field: "tomato\x00"})
+    assert body["detail"] == detail

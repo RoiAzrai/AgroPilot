@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
 
@@ -63,3 +63,17 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+
+## Project map (AgroPilot)
+
+AgroPilot tells a grower when to water a plot and for how long. Each service is a separate folder under `services/`, with its own `.venv` and `.env`. Services never import each other's code. They talk over HTTP only.
+
+| Service | Port | Role |
+| --- | --- | --- |
+| `registry-service` | 8000 | Farms, plots, catalogues. SQLite locally, PostgreSQL in production (`DATABASE_URL`). |
+| `weather-service` | 8001 | Daily forecast (ET0, rain) from Open-Meteo, cached in memory. (P2, not built yet) |
+| `planner-service` | 8002 | 7-day irrigation plan from registry + weather. (P2, not built yet) |
+| `frontend` | 3000 | Next.js UI. Calls the services from the server only. (P2, not built yet) |
+
+- Specs: `docs/task-p1.md`, `docs/task-p2.md`. Past decisions: `docs/judgment-log.md`.
+- Settings come from each service's `.env`, read with pydantic-settings in one `config.py`. Never hardcode URLs, timeouts, retries, or keys.

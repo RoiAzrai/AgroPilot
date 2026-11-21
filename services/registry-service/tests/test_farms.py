@@ -4,6 +4,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from conftest import assert_problem
+from routers import farms
 
 DEMO_COOPERATIVE = "b7e2c0a0-3c1d-4f0a-9a11-0c5d2e6f1001"
 EAST_FARM = "a9c1e4b2-6f70-4d8e-a144-3f8b5c904004"
@@ -122,3 +123,22 @@ def test_delete_farm_with_plots_is_409(client, db_file):
 def test_unknown_or_malformed_id_is_404(client, farm_id, method, body):
     response = client.request(method, f"/v1/farms/{farm_id}", json=body)
     assert_problem(response, 404, "NOT_FOUND")
+
+
+@pytest.mark.parametrize(
+    "method, path",
+    [("POST", "/v1/farms"), ("PATCH", f"/v1/farms/{DEMO_COOPERATIVE}")],
+)
+def test_name_with_nul_is_422(client, method, path):
+    before = client.get("/v1/farms").json()
+    response = client.request(method, path, json={"name": "a\x00b"})
+    assert "body.name" in assert_problem(response, 422, "VALIDATION")["detail"]
+    assert client.get("/v1/farms").json() == before
+
+
+def test_patch_farm_deleted_during_update_is_404(client, monkeypatch):
+    # The farm disappears between the lookup and the UPDATE: the UPDATE changes no row.
+    ghost = str(uuid4())
+    monkeypatch.setattr(farms, "_get_farm", lambda conn, farm_id: {"id": farm_id, "name": "Ghost"})
+    body = assert_problem(client.patch(f"/v1/farms/{ghost}", json={"name": "Renamed"}), 404, "NOT_FOUND")
+    assert body["detail"] == "Farm not found"

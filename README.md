@@ -10,7 +10,13 @@ Services live under `services/`. The service in the repository today is `registr
 ```bash
 cd services/registry-service
 uv sync
+cp .env.example .env
+bash seed_registry.sh
 uv run uvicorn main:app --host 127.0.0.1 --port 8000
 ```
 
 Open http://127.0.0.1:8000/health. A running service returns `{"status": "ok"}`.
+
+Configuration, local SQLite and PostgreSQL setup: [services/registry-service/README.md](services/registry-service/README.md).
+
+The weather service (daily ET0 and rain forecast, port 8001): [services/weather-service/README.md](services/weather-service/README.md).
