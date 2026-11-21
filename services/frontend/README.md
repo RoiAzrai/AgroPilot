@@ -1,36 +1,76 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# frontend
 
-## Getting Started
+The AgroPilot web UI. It has two pages: `/` (farms and plots) and `/plots/{id}` (today's recommendation, the 7-day plan and the soil bucket panel). Next.js App Router, port 3000.
 
-First, run the development server:
+## Prerequisites
+
+- Node.js and npm (no version is pinned in `package.json`).
+- The three backend services running (see Running locally).
+
+## Configuration
+
+Copy the example file and edit the values:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+cp .env.example .env.local
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+| Variable | Meaning |
+| --- | --- |
+| `REGISTRY_URL` | Base URL of registry-service (farms, plots, catalogues). |
+| `WEATHER_URL` | Base URL of weather-service. Used only for the status line health check. |
+| `PLANNER_URL` | Base URL of planner-service (plans and bucket suggestions). |
+| `REGISTRY_TIMEOUT_MS` | Timeout in milliseconds for each call to registry-service. |
+| `PLANNER_TIMEOUT_MS` | Timeout in milliseconds for each call to planner-service. |
+| `HEALTH_TIMEOUT_MS` | Timeout in milliseconds for each service health check. |
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+The app reads these with zod in `src/lib/config.ts`. If a value is missing or invalid, the app stops with an error that names the variable.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Running locally
 
-## Learn More
+Start the backend services first. Run each command group from the repository root, each in its own terminal (adapted from each service's README):
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+# registry-service, port 8000
+cd services/registry-service
+uv run uvicorn main:app --host 127.0.0.1 --port 8000
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+# weather-service, port 8001
+cd services/weather-service
+uv sync
+cp -n .env.example .env
+uv run uvicorn main:app --host 127.0.0.1 --port 8001
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+# planner-service, port 8002
+cd services/planner-service
+cp -n .env.example .env
+uv sync
+uv run uvicorn main:app --host 127.0.0.1 --port 8002
+```
 
-## Deploy on Vercel
+The registry needs `DATABASE_URL` in its `.env` (SQLite or PostgreSQL; see `services/registry-service/README.md`). First-time database setup and seeding are described there. `seed_registry.sh` is for first-time setup only. It replaces existing data: it deletes `registry.db` before writing a new one (`rm -f`, line 17).
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Then, in `services/frontend`:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```bash
+npm install
+npm run dev
+```
+
+Open http://localhost:3000.
+
+## Scripts
+
+- `npm run dev`: development server on port 3000.
+- `npm run build`: production build.
+- `npm run start`: runs the production build on port 3000 (run `npm run build` first).
+- `npm run lint`: runs ESLint.
+- `npm test`: runs the unit tests in `src/lib/*.test.ts` with `tsx --test`.
+
+## How it works
+
+The browser never calls the services directly. Every call to registry-service, planner-service and the health checks is made on the server, from the modules in `src/lib` (they import `server-only`, so they cannot reach the browser bundle). Pages read data during rendering. Writes (create a farm, create a plot, delete a plot, suggest a bucket level) go through server actions in `src/app/actions.ts`.
+
+## Caching
+
+`cacheComponents` is off. `next.config.ts` does not set it, so Next's default (off) applies. The two pages therefore use `export const dynamic = "force-dynamic"` (`src/app/page.tsx` and `src/app/plots/[id]/page.tsx`), and every request gets fresh data from the services. If `cacheComponents` is ever turned on, this setting must be revisited.
