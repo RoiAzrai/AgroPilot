@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  cells,
   describeSeason,
   describeToday,
   formatFetchedAt,
@@ -87,4 +88,40 @@ test("describeSeason: every stage", () => {
 test("describeSeason: an unknown stage gives null", () => {
   assert.equal(describeSeason("harvest"), null);
   assert.equal(describeSeason(""), null);
+});
+
+test("cells: et0/rain split into value and unit", () => {
+  const c = cells(day({ et0_mm: 2.5, rain_mm: 0 }));
+  assert.deepEqual(c.et0, { value: "2.5", unit: "mm" });
+  assert.deepEqual(c.rain, { value: "0.0", unit: "mm" });
+});
+
+test("cells: litres split into value and unit", () => {
+  const c = cells(day({ stage: "dev", litres: 1234567 }));
+  assert.deepEqual(c.litres, { value: "1,234,567", unit: "L" });
+});
+
+test("cells: bucket split into value and unit", () => {
+  const c = cells(
+    day({ stage: "dev", bucket_mm: 70, bucket_capacity_mm: 72.5 }),
+  );
+  assert.deepEqual(c.bucket, { value: "70.0 / 72.5", unit: "mm" });
+});
+
+test("cells: ended season gives null for run, litres, kc and bucket", () => {
+  const c = cells(
+    day({
+      stage: "ended",
+      run_minutes: 38,
+      litres: 1234,
+      kc: 0.6,
+      bucket_mm: 70,
+      bucket_capacity_mm: 72.5,
+    }),
+  );
+  assert.equal(c.run, null);
+  assert.equal(c.litres, null);
+  assert.equal(c.kc, null);
+  assert.equal(c.bucket, null);
+  assert.deepEqual(c.et0, { value: "2.7", unit: "mm" });
 });

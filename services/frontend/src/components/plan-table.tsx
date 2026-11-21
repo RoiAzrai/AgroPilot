@@ -1,5 +1,5 @@
 import { TriangleAlert } from "lucide-react";
-import { formatMinutes, isInSeason } from "@/lib/recommendation";
+import { cells, type Quantity } from "@/lib/recommendation";
 import type { DayOut, Stage } from "@/lib/types";
 
 const STAGE_LABEL: Record<Stage, string> = {
@@ -28,23 +28,10 @@ function StaleBadge() {
   );
 }
 
-// Every cell is decided by the day's own stage: a plan can cross late -> ended.
-function cells(day: DayOut) {
-  const live = isInSeason(day);
-  return {
-    run: live ? formatMinutes(day.run_minutes) : null,
-    litres: live ? `${day.litres.toLocaleString("en-US")} L` : null,
-    et0: `${day.et0_mm.toFixed(1)} mm`,
-    rain: `${day.rain_mm.toFixed(1)} mm`,
-    kc: live && day.kc !== null ? day.kc.toFixed(2) : null,
-    bucket:
-      live && day.bucket_mm !== null && day.bucket_capacity_mm !== null
-        ? `${day.bucket_mm.toFixed(1)} / ${day.bucket_capacity_mm.toFixed(1)} mm`
-        : null,
-  };
-}
-
 const orDash = (v: string | null) => v ?? <NotApplicable />;
+
+const orDashQuantity = (q: Quantity | null) =>
+  q ? `${q.value} ${q.unit}` : <NotApplicable />;
 
 export function PlanTable({ days }: { days: DayOut[] }) {
   return (
@@ -73,19 +60,19 @@ export function PlanTable({ days }: { days: DayOut[] }) {
                     {orDash(c.run)}
                   </p>
                   <p className="text-sm text-muted-foreground">
-                    {orDash(c.litres)}
+                    {orDashQuantity(c.litres)}
                   </p>
                 </div>
               </div>
               <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
                 <dt className="text-muted-foreground">ET0</dt>
-                <dd className="text-right">{c.et0}</dd>
+                <dd className="text-right">{orDashQuantity(c.et0)}</dd>
                 <dt className="text-muted-foreground">Rain</dt>
-                <dd className="text-right">{c.rain}</dd>
+                <dd className="text-right">{orDashQuantity(c.rain)}</dd>
                 <dt className="text-muted-foreground">Kc</dt>
                 <dd className="text-right">{orDash(c.kc)}</dd>
                 <dt className="text-muted-foreground">Bucket</dt>
-                <dd className="text-right">{orDash(c.bucket)}</dd>
+                <dd className="text-right">{orDashQuantity(c.bucket)}</dd>
               </dl>
               {day.stale && (
                 <div>
@@ -130,11 +117,11 @@ export function PlanTable({ days }: { days: DayOut[] }) {
                   </th>
                   <td className="px-4 py-3">{STAGE_LABEL[day.stage]}</td>
                   <td className="px-4 py-3 text-right text-base font-bold whitespace-nowrap">{orDash(c.run)}</td>
-                  <td className="px-4 py-3 text-right">{c.litres === null ? <NotApplicable /> : c.litres.replace(" L", "")}</td>
-                  <td className="px-4 py-3 text-right">{c.et0.replace(" mm", "")}</td>
-                  <td className="px-4 py-3 text-right">{c.rain.replace(" mm", "")}</td>
+                  <td className="px-4 py-3 text-right">{c.litres === null ? <NotApplicable /> : c.litres.value}</td>
+                  <td className="px-4 py-3 text-right">{c.et0.value}</td>
+                  <td className="px-4 py-3 text-right">{c.rain.value}</td>
                   <td className="px-4 py-3 text-right">{orDash(c.kc)}</td>
-                  <td className="px-4 py-3 text-right whitespace-nowrap">{c.bucket === null ? <NotApplicable /> : c.bucket.replace(" mm", "")}</td>
+                  <td className="px-4 py-3 text-right whitespace-nowrap">{c.bucket === null ? <NotApplicable /> : c.bucket.value}</td>
                 </tr>
               );
             })}

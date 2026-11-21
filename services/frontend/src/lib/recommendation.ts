@@ -8,6 +8,36 @@ export type Recommendation = {
   detail: string;
 };
 
+export type Quantity = { value: string; unit: string };
+
+export type DayCells = {
+  run: string | null;
+  litres: Quantity | null;
+  et0: Quantity;
+  rain: Quantity;
+  kc: string | null;
+  bucket: Quantity | null;
+};
+
+// Every cell is decided by the day's own stage: a plan can cross late -> ended.
+export function cells(day: DayOut): DayCells {
+  const live = isInSeason(day);
+  return {
+    run: live ? formatMinutes(day.run_minutes) : null,
+    litres: live ? { value: day.litres.toLocaleString("en-US"), unit: "L" } : null,
+    et0: { value: day.et0_mm.toFixed(1), unit: "mm" },
+    rain: { value: day.rain_mm.toFixed(1), unit: "mm" },
+    kc: live && day.kc !== null ? day.kc.toFixed(2) : null,
+    bucket:
+      live && day.bucket_mm !== null && day.bucket_capacity_mm !== null
+        ? {
+            value: `${day.bucket_mm.toFixed(1)} / ${day.bucket_capacity_mm.toFixed(1)}`,
+            unit: "mm",
+          }
+        : null,
+  };
+}
+
 export function formatMinutes(n: number): string {
   const total = Math.round(n);
   if (total < 60) return `${total} ${total === 1 ? "minute" : "minutes"}`;
