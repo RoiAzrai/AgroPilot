@@ -61,7 +61,7 @@ async function loadCatalogs(): Promise<Catalogs | null> {
 
 async function Farms() {
   const [data, catalogs] = await Promise.all([load(), loadCatalogs()]);
-  if (!data.ok) return <ErrorPanel error={data.error} what={data.what} />;
+  if (!data.ok) return <ErrorPanel error={data.error} what={data.what} detailed />;
   if (data.farms.length === 0) {
     return <p className="text-muted-foreground">No farms yet.</p>;
   }
