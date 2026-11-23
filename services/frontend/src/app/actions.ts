@@ -76,8 +76,9 @@ export async function createPlotAction(
 // deleted) in the same response and flash not-found. "/" is force-dynamic, so the
 // client's router.push("/") fetches it fresh anyway.
 export async function deletePlotAction(id: string): Promise<ActionResult> {
-  if (typeof id !== "string" || id.length === 0) {
-    return { ok: false, kind: "rejected", message: "Missing plot id." };
+  // Server actions are public endpoints: a non-UUID id never reaches the registry URL.
+  if (!isUuid(id)) {
+    return { ok: false, kind: "rejected", message: "This plot no longer exists.", plotGone: true };
   }
   try {
     await deletePlot(id);

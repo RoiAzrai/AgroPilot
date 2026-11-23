@@ -86,6 +86,33 @@ test("delete 503 / timeout stay errors", () => {
   assert.ok(!b.ok && b.kind === "timeout");
 });
 
+test("delete failure messages talk about deleting", () => {
+  const down = deleteFailureToResult(http(503));
+  const net = deleteFailureToResult({ kind: "network", detail: "x" });
+  const timeout = deleteFailureToResult({ kind: "timeout", detail: "x" });
+  const rejected = deleteFailureToResult(http(400, "boom"));
+  assert.ok(!down.ok && !net.ok && !timeout.ok && !rejected.ok);
+  assert.equal(down.message, "Registry unavailable. Nothing was deleted. Try again.");
+  assert.equal(net.message, down.message);
+  assert.equal(
+    timeout.message,
+    "The registry did not answer. The plot may have been deleted. Reload the page to check.",
+  );
+  assert.equal(rejected.kind, "rejected");
+  assert.equal(rejected.message, "Nothing was deleted. Reload the page and try again.");
+});
+
+test("create/update failure messages are unchanged", () => {
+  const down = failureToResult(http(503));
+  const timeout = failureToResult({ kind: "timeout", detail: "x" });
+  assert.ok(!down.ok && !timeout.ok);
+  assert.equal(down.message, "Registry unavailable. Nothing was saved. Try again.");
+  assert.equal(
+    timeout.message,
+    "The registry did not answer. It may have been saved. Check before retrying.",
+  );
+});
+
 test("plotFailureToResult: 409 -> name field", () => {
   const r = plotFailureToResult(http(409, "Record already exists"));
   assert.ok(!r.ok);

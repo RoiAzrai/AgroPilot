@@ -57,12 +57,22 @@ export function failureToResult(f: FailureLike): ActionResult<never> {
   return { ok: false, kind: "rejected", message: f.detail };
 }
 
+const DELETE_UNAVAILABLE = "Registry unavailable. Nothing was deleted. Try again.";
+const DELETE_TIMEOUT =
+  "The registry did not answer. The plot may have been deleted. Reload the page to check.";
+
+const DELETE_REJECTED = "Nothing was deleted. Reload the page and try again.";
+
 // 404 on delete means the plot is already gone: success from the user's point of view.
 export function deleteFailureToResult(f: FailureLike): ActionResult {
   if (f.kind === "http" && f.status === 404) {
     return { ok: true, data: undefined, alreadyDeleted: true };
   }
-  return failureToResult(f);
+  const r = failureToResult(f);
+  if (r.ok) return r;
+  if (r.kind === "timeout") return { ...r, message: DELETE_TIMEOUT };
+  if (r.kind === "unavailable") return { ...r, message: DELETE_UNAVAILABLE };
+  return { ...r, message: DELETE_REJECTED };
 }
 
 const UNKNOWN_REFERENCE: Record<string, string> = {

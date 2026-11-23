@@ -5,6 +5,7 @@ export const farmSchema = z.object({
     .string()
     .trim()
     .min(1, "Enter a farm name")
+    .max(100, "Name must be at most 100 characters")
     .refine((v) => !v.includes("\0"), "The name contains an invalid character"),
 });
 
@@ -77,6 +78,7 @@ export function makePlotSchema(now: () => Date = () => new Date()) {
       .string("Enter a plot name")
       .trim()
       .min(1, "Enter a plot name")
+      .max(100, "Name must be at most 100 characters")
       .refine((v) => !v.includes("\0"), "The name contains an invalid character"),
     area_m2: positive("Area"),
     crop_id: choice("a crop"),

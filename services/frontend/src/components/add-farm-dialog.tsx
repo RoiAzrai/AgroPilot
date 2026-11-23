@@ -58,6 +58,7 @@ function FarmForm({ onDone }: { onDone: () => void }) {
         <Input
           id="farm-name"
           name="name"
+          maxLength={100}
           value={name}
           onChange={(e) => setName(e.target.value)}
           autoComplete="off"

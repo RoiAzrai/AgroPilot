@@ -138,3 +138,17 @@ test("parseDecimal: other comma and dot decimals still work", () => {
   assert.equal(parseDecimal("1000"), 1000);
   assert.equal(parseDecimal("1.000"), 1);
 });
+
+const TOO_LONG = "Name must be at most 100 characters";
+
+test("farm: 100-character name passes, 101 is rejected with a message", () => {
+  assert.equal(farmSchema.safeParse({ name: "a".repeat(100) }).success, true);
+  const r = farmSchema.safeParse({ name: "a".repeat(101) });
+  assert.ok(!r.success);
+  assert.equal(r.error.issues[0].message, TOO_LONG);
+});
+
+test("plot: 100-character name passes, 101 is rejected with a message", () => {
+  assert.deepEqual(issuesFor({ name: "a".repeat(100) }), {});
+  assert.equal(issuesFor({ name: "a".repeat(101) }).name, TOO_LONG);
+});

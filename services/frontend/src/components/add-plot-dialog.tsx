@@ -175,7 +175,7 @@ function PlotForm({
       <input type="hidden" name="farm_id" value={farm.id} />
 
       <Field id="plot-name" label="Name" error={errors.name}>
-        <Input {...text("name")} type="text" autoFocus />
+        <Input {...text("name")} type="text" maxLength={100} autoFocus />
       </Field>
 
       <Field id="plot-crop_id" label="Crop" error={errors.crop_id}>
