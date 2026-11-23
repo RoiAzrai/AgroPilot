@@ -56,7 +56,16 @@ def _uuid_string(value: str) -> str:
     return canonical
 
 
-Name = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+def _no_nul(value: str) -> str:
+    # PostgreSQL cannot store NUL in TEXT.
+    if "\x00" in value:
+        raise ValueError("must not contain NUL characters")
+    return value
+
+
+Name = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1), AfterValidator(_no_nul)
+]
 # Strict rejects "1000" and true but still accepts the integer 1000 for a float.
 Number = Annotated[float, Strict(), AllowInfNan(False)]
 IsoDate = Annotated[date, BeforeValidator(_iso_date_string)]

@@ -5,6 +5,9 @@ description = "AgroPilot registry service."
 requires-python = ">=3.12"
 dependencies = [
     "fastapi~=0.115",
+    "psycopg[binary]~=3.2",
+    "pydantic-settings~=2.6",
+    "sqlalchemy~=2.0",
     "uvicorn~=0.32",
 ]
 
@@ -15,8 +18,19 @@ package = false
 dev = [
     "httpx~=0.28",
     "pytest~=9.2",
+    "pytest-cov>=7.1.0",
 ]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["."]
+# perf/ = load-test and benchmark scripts run by hand, not service code
+omit = ["tests/*", "perf/*"]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 100

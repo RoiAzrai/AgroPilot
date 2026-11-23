@@ -1,18 +1,19 @@
 import sqlite3
 
 import pytest
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from sqlalchemy import Connection, text
 
 from conftest import assert_problem
-from db import get_db
+from db import get_db, lifespan
 from errors import conflict, not_found, register_error_handlers, validation
 
 
 @pytest.fixture
 def probe(db_file) -> TestClient:
     """A throwaway app with the real handlers, to exercise each error path."""
-    probe_app = FastAPI()
+    probe_app = FastAPI(lifespan=lifespan)
     register_error_handlers(probe_app)
 
     @probe_app.get("/not-found")
@@ -27,26 +28,33 @@ def probe(db_file) -> TestClient:
     def raise_validation():
         raise validation("Unknown farm")
 
+    @probe_app.get("/custom-405")
+    def custom_405():
+        raise HTTPException(405, "Use POST here", headers={"Allow": "POST"})
+
     @probe_app.get("/typed")
     def typed(n: int):
         return {"n": n}
 
     @probe_app.get("/duplicate-plot")
-    def duplicate_plot(conn: sqlite3.Connection = Depends(get_db)):
-        with conn:
-            conn.execute(
-                "INSERT INTO plots SELECT ?, farm_id, name, area_m2, crop_id, planting_date,"
+    def duplicate_plot(conn: Connection = Depends(get_db)):
+        conn.execute(
+            text(
+                "INSERT INTO plots SELECT :id, farm_id, name, area_m2, crop_id, planting_date,"
                 " soil_id, row_spacing_m, emitter_spacing_m, emitter_id, lat, lon"
-                " FROM plots WHERE name = 'North block'",
-                ("00000000-0000-4000-8000-000000000000",),
-            )
+                " FROM plots WHERE name = 'North block'"
+            ),
+            {"id": "00000000-0000-4000-8000-000000000000"},
+        )
+        conn.commit()
 
     @probe_app.get("/foreign-key")
-    def foreign_key(conn: sqlite3.Connection = Depends(get_db)):
-        with conn:
-            conn.execute("DELETE FROM farms")
+    def foreign_key(conn: Connection = Depends(get_db)):
+        conn.execute(text("DELETE FROM farms"))
+        conn.commit()
 
-    return TestClient(probe_app, raise_server_exceptions=False)
+    with TestClient(probe_app, raise_server_exceptions=False) as test_client:
+        yield test_client
 
 
 @pytest.mark.parametrize(
@@ -104,3 +112,10 @@ def test_health_is_unchanged(client):
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/json"
     assert response.json() == {"status": "ok"}
+
+
+def test_http_error_with_custom_detail_keeps_it(probe):
+    # Only Starlette's stock 404/405 text is rewritten; a route's own detail passes through.
+    body = assert_problem(probe.get("/custom-405"), 405, "VALIDATION")
+    assert body["detail"] == "Use POST here"
+    assert probe.get("/custom-405").headers["allow"] == "POST"

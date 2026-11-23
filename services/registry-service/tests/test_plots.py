@@ -2,7 +2,8 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from conftest import assert_problem
+from conftest import assert_problem, updates
+from routers import plots
 
 DEMO_COOPERATIVE = "b7e2c0a0-3c1d-4f0a-9a11-0c5d2e6f1001"
 EAST_FARM = "a9c1e4b2-6f70-4d8e-a144-3f8b5c904004"
@@ -100,6 +101,21 @@ def test_create_with_spec_body(client):
     assert client.get(f"/v1/plots/{body['id']}").json() == body
 
 
+def test_values_round_trip_exactly(client):
+    sent = {
+        **SPEC_BODY,
+        "name": "חלקה צפונית 🌱",
+        "lat": 31.2345678,
+        "lon": 34.7818064,
+        "area_m2": 1000.1,
+    }
+    created = client.post("/v1/plots", json=sent)
+    assert created.status_code == 201
+    stored = client.get(f"/v1/plots/{created.json()['id']}").json()
+    for field in ("name", "lat", "lon", "area_m2"):
+        assert stored[field] == sent[field]
+
+
 def test_create_normalizes_farm_id_and_name(client):
     body = {**SPEC_BODY, "farm_id": DEMO_COOPERATIVE.upper(), "name": "  South block  "}
     created = client.post("/v1/plots", json=body).json()
@@ -170,6 +186,38 @@ def test_patch_changes_only_the_sent_field(client):
     assert response.status_code == 200
     assert response.json() == {**before, "area_m2": 1250}
     assert client.get(f"/v1/plots/{NORTH_BLOCK}").json() == {**before, "area_m2": 1250}
+
+
+def test_patch_of_one_field_updates_only_that_column(client, sql_log):
+    response = client.patch(f"/v1/plots/{NORTH_BLOCK}", json={"area_m2": 1250})
+    assert response.status_code == 200
+    assert updates(sql_log) == [("UPDATE plots SET area_m2 = ? WHERE id = ?", (1250.0, NORTH_BLOCK))]
+
+
+def test_patch_of_two_fields_updates_only_those_columns(client, sql_log):
+    response = client.patch(f"/v1/plots/{NORTH_BLOCK}", json={"lon": 34.8, "name": "N2"})
+    assert response.status_code == 200
+    # Column order is the model's field order, not the request's.
+    assert updates(sql_log) == [
+        ("UPDATE plots SET name = ?, lon = ? WHERE id = ?", ("N2", 34.8, NORTH_BLOCK))
+    ]
+
+
+def test_patch_empty_body_writes_nothing(client, sql_log):
+    assert client.patch(f"/v1/plots/{NORTH_BLOCK}", json={}).status_code == 200
+    assert updates(sql_log) == []
+
+
+def test_patch_keeps_a_concurrent_change_to_another_field(client, monkeypatch):
+    # PATCH A reads the plot; PATCH B renames it; then A writes area_m2 from its old read.
+    stale = client.get(f"/v1/plots/{NORTH_BLOCK}").json()
+    assert client.patch(f"/v1/plots/{NORTH_BLOCK}", json={"name": "Renamed by B"}).status_code == 200
+    real_get_plot = plots._get_plot
+    monkeypatch.setattr(plots, "_get_plot", lambda conn, plot_id: stale)
+    assert client.patch(f"/v1/plots/{NORTH_BLOCK}", json={"area_m2": 1250}).status_code == 200
+    monkeypatch.setattr(plots, "_get_plot", real_get_plot)
+    stored = client.get(f"/v1/plots/{NORTH_BLOCK}").json()
+    assert stored == {**stale, "name": "Renamed by B", "area_m2": 1250}
 
 
 def test_patch_empty_body_leaves_plot_unchanged(client):
@@ -260,3 +308,14 @@ def test_farm_can_be_deleted_once_its_plots_are_gone(client):
 def test_unknown_or_malformed_id_is_404(client, plot_id, method, body):
     response = client.request(method, f"/v1/plots/{plot_id}", json=body)
     assert_problem(response, 404, "NOT_FOUND")
+
+
+def test_patch_plot_deleted_during_update_is_404(client, monkeypatch, all_plots):
+    # The plot disappears between the lookup and the UPDATE: the UPDATE changes no row.
+    ghost = str(uuid4())
+    existing = client.get(f"/v1/plots/{NORTH_BLOCK}").json()
+    monkeypatch.setattr(plots, "_get_plot", lambda conn, plot_id: existing)
+    before = all_plots()
+    body = assert_problem(client.patch(f"/v1/plots/{ghost}", json={"name": "Renamed"}), 404, "NOT_FOUND")
+    assert body["detail"] == "Plot not found"
+    assert all_plots() == before
