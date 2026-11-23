@@ -1,12 +1,14 @@
 import asyncio
+import logging
 import time
 from datetime import date, datetime, timedelta, timezone
 
+import httpx
 import pytest
 
 from config import Settings
 from forecasts import ForecastCache, Unavailable
-from provider import Day, Forecast, ProviderError
+from provider import Day, Forecast, ProviderError, fetch_forecast
 from tests.fakes import FakeClock, ScriptedFetch
 
 UTC = timezone.utc
@@ -286,3 +288,142 @@ async def test_bug_does_not_start_pause():
     with pytest.raises(KeyError):
         await cache.get(CELL, 7)
     assert fetch.calls == 2
+
+
+# W1: only a timeout, a connection error or a status >= 500 is retried.
+
+
+def real_fetch(handler, **kw):
+    """The real provider code over a MockTransport; returns (fetch, calls)."""
+    calls = []
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    cfg = settings(**kw)
+
+    async def fetch(cell):
+        calls.append(cell)
+        return await fetch_forecast(client, cfg, 31.25, 34.85, lambda: T0)
+
+    return fetch, calls
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("status", [400, 401, 403, 429])
+async def test_client_error_is_not_retried_and_503_without_stale(status):
+    fetch, calls = real_fetch(lambda r: httpx.Response(status))
+    cache, _ = make(fetch)
+    with pytest.raises(Unavailable) as info:
+        await cache.get(CELL, 7)
+    assert len(calls) == 1
+    assert info.value.retry_after == 60  # same path as exhausted retries: the pause
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("status", [400, 401, 403, 429])
+async def test_client_error_is_not_retried_and_serves_stale(status):
+    fetch, calls = real_fetch(lambda r: httpx.Response(status))
+    cache, _ = await stale_cache(fetch)
+    answer = await cache.get(CELL, 7)
+    assert len(calls) == 1
+    assert answer.stale is True
+
+
+@pytest.mark.anyio
+async def test_client_error_pauses_the_cell():
+    fetch, calls = real_fetch(lambda r: httpx.Response(429))
+    cache, _ = make(fetch)
+    for _ in range(2):
+        with pytest.raises(Unavailable):
+            await cache.get(CELL, 7)
+    assert len(calls) == 1
+
+
+@pytest.mark.anyio
+async def test_server_error_is_still_retried():
+    fetch, calls = real_fetch(lambda r: httpx.Response(500))
+    cache, _ = make(fetch)
+    with pytest.raises(Unavailable):
+        await cache.get(CELL, 7)
+    assert len(calls) == 3
+
+
+@pytest.mark.anyio
+async def test_timeout_is_still_retried():
+    def handler(request):
+        raise httpx.ReadTimeout("slow")
+
+    fetch, calls = real_fetch(handler)
+    cache, _ = make(fetch)
+    with pytest.raises(Unavailable):
+        await cache.get(CELL, 7)
+    assert len(calls) == 3
+
+
+@pytest.mark.anyio
+async def test_key_not_logged_on_client_error(caplog):
+    caplog.set_level(logging.DEBUG)
+    fetch, calls = real_fetch(lambda r: httpx.Response(401), provider_api_key="secret-key-123")
+    cache, _ = make(fetch)
+    with pytest.raises(Unavailable):
+        await cache.get(CELL, 7)
+    assert len(calls) == 1
+    assert "secret-key-123" not in caplog.text
+
+
+# W2: storing a forecast sweeps what can never be served again.
+
+H = 3600
+
+
+@pytest.mark.anyio
+async def test_store_evicts_forecasts_past_max_stale_and_expired_pauses():
+    old, kept, new, paused_old, paused_live = (1, 1), (2, 2), (3, 3), (4, 4), (5, 5)
+    cache, clock = make(ScriptedFetch(good(T0)))
+    await cache.get(old, 7)
+    clock.advance(5 * H)
+    cache._fetch = ScriptedFetch(good(clock.now()))
+    await cache.get(kept, 7)
+    cache._fetch = ScriptedFetch(ProviderError("down"))
+    with pytest.raises(Unavailable):
+        await cache.get(paused_old, 7)  # paused for 60 s from T0 + 5 h
+    clock.advance(20 * H)  # `old` is 25 h old, `kept` 20 h
+    cache._fetch = ScriptedFetch(ProviderError("down"))
+    with pytest.raises(Unavailable):
+        await cache.get(paused_live, 7)  # paused for 60 s from now
+    assert set(cache._forecasts) == {old, kept}
+    assert set(cache._paused_until) == {paused_old, paused_live}
+
+    cache._fetch = ScriptedFetch(good(clock.now()))
+    await cache.get(new, 7)
+
+    assert set(cache._forecasts) == {kept, new}
+    assert set(cache._paused_until) == {paused_live}
+
+
+@pytest.mark.anyio
+async def test_entry_exactly_max_stale_old_stays():
+    cache, clock = make(ScriptedFetch(good(T0)))
+    await cache.get(CELL, 7)
+    clock.advance(24 * H)
+    cache._fetch = ScriptedFetch(good(clock.now()))
+    await cache.get((9, 9), 7)
+    assert CELL in cache._forecasts  # still servable as stale (<=)
+
+
+@pytest.mark.anyio
+async def test_sweep_does_not_break_a_running_refresh_and_its_waiter():
+    slow_cell = (7, 7)
+    cache, clock = make(ScriptedFetch(good(T0)), refresh_deadline_seconds=2)
+    await cache.get(slow_cell, 7)
+    clock.advance(25 * H)  # the old entry of slow_cell is past max-stale
+
+    async def fetch(cell):
+        if cell == slow_cell:
+            await asyncio.sleep(0.1)
+        return good(clock.now())
+
+    cache._fetch = fetch
+    leader, waiter, other = await asyncio.gather(
+        cache.get(slow_cell, 7), cache.get(slow_cell, 7), cache.get((8, 8), 7)
+    )
+    assert leader.stale is False and waiter.stale is False and other.stale is False
+    assert set(cache._forecasts) == {slow_cell, (8, 8)}

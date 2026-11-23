@@ -32,16 +32,20 @@ Read from the environment first, then from `.env`. Only these keys are allowed: 
 | --- | --- | --- | --- |
 | `PROVIDER_BASE_URL` | yes | none (example `https://api.open-meteo.com/v1/forecast`) | Forecast endpoint. |
 | `PROVIDER_API_KEY` | no | empty | Sent as `apikey` only when not empty. Never logged. |
-| `PROVIDER_ATTEMPT_TIMEOUT_SECONDS` | no | `1.5` | Timeout of one attempt. |
+| `PROVIDER_ATTEMPT_TIMEOUT_SECONDS` | no | `1.5` | Timeout of one attempt, in seconds. Must be above 0. |
 | `PROVIDER_RETRIES` | no | `2` | Retries after the first attempt (3 attempts in total). |
-| `PROVIDER_RETRY_BACKOFF_SECONDS` | no | `0.2` | Constant wait between attempts. |
-| `REFRESH_DEADLINE_SECONDS` | no | `5` | Bounds all attempts of one refresh together, and every wait on it. |
-| `FORECAST_FRESH_SECONDS` | no | `10800` (3 h) | A fresh forecast is served without calling the provider. |
-| `FORECAST_MAX_STALE_SECONDS` | no | `86400` (24 h) | A forecast older than this is never served. |
-| `FAILURE_PAUSE_SECONDS` | no | `60` | After a failed refresh, no provider call for this long. |
-| `RETRY_AFTER_SECONDS` | no | `5` | `Retry-After` of a 503 outside a pause. |
+| `PROVIDER_RETRY_BACKOFF_SECONDS` | no | `0.2` | Constant wait between attempts, in seconds. |
+| `REFRESH_DEADLINE_SECONDS` | no | `5` | In seconds, above 0. Bounds all attempts of one refresh together, and every wait on it. |
+| `FORECAST_FRESH_SECONDS` | no | `10800` (3 h) | In seconds, above 0. A fresh forecast is served without calling the provider. |
+| `FORECAST_MAX_STALE_SECONDS` | no | `86400` (24 h) | In seconds. A forecast older than this is never served, and is removed from memory when the next forecast is stored. |
+| `FAILURE_PAUSE_SECONDS` | no | `60` | In seconds. After a failed refresh, no provider call for this long. |
+| `RETRY_AFTER_SECONDS` | no | `5` | In seconds, at least 1. `Retry-After` of a 503 outside a pause. |
 
-The service refuses to start when `PROVIDER_BASE_URL` is missing or empty, when `PROVIDER_ATTEMPT_TIMEOUT_SECONDS >= REFRESH_DEADLINE_SECONDS` (one attempt would eat the budget and retries would never happen), when a value is negative or not finite, or when `FORECAST_FRESH_SECONDS > FORECAST_MAX_STALE_SECONDS`.
+The service refuses to start when `PROVIDER_BASE_URL` is missing or empty, when `PROVIDER_ATTEMPT_TIMEOUT_SECONDS >= REFRESH_DEADLINE_SECONDS` (one attempt would eat the budget and retries would never happen), when a value is negative or not finite, when a timeout, the deadline or `FORECAST_FRESH_SECONDS` is 0, when `RETRY_AFTER_SECONDS` is below 1, when the attempts do not fit in the deadline (`(1 + PROVIDER_RETRIES) * PROVIDER_ATTEMPT_TIMEOUT_SECONDS + PROVIDER_RETRIES * PROVIDER_RETRY_BACKOFF_SECONDS` above `REFRESH_DEADLINE_SECONDS`; with the defaults 4.9 against 5, so raising `PROVIDER_RETRIES` needs a larger deadline), or when `FORECAST_FRESH_SECONDS > FORECAST_MAX_STALE_SECONDS`.
+
+## Retries
+
+Only a timeout, a connection error or a status of 500 and above is retried. Any other status that is not 200 (for example 400, 401, 403, 429) fails at once with one provider call, and goes the same way as exhausted retries: the pause for that cell, then a stale forecast or a 503 with `Retry-After`. A provider-wide pause and the provider's own `Retry-After` header are not used yet.
 
 ## Open-Meteo
 

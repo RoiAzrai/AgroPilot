@@ -49,7 +49,14 @@ class Forecast:
 
 
 class ProviderError(Exception):
-    """The provider answer is unusable. The message is the reason only."""
+    """The provider answer is unusable. The message is the reason only.
+
+    `retryable` is False for a client error (a status other than 200 below 500):
+    sending the same request again cannot help, and a 429 would get worse."""
+
+    def __init__(self, reason: str, retryable: bool = True):
+        super().__init__(reason)
+        self.retryable = retryable
 
 
 def _timezone_name(payload: dict) -> str:
@@ -164,9 +171,9 @@ def _day(d: date, et0: object, rain: object) -> Day:
     return Day(d, _number(et0, _ET0), _number(rain, _RAIN))
 
 
-def _fail(reason: str) -> ProviderError:
+def _fail(reason: str, retryable: bool = True) -> ProviderError:
     logger.warning("provider attempt failed: %s", reason)
-    return ProviderError(reason)
+    return ProviderError(reason, retryable)
 
 
 async def fetch_forecast(
@@ -201,7 +208,10 @@ async def fetch_forecast(
         raise _fail(f"provider request failed ({type(exc).__name__})") from None
     fetched_at = now()
     if response.status_code != 200:
-        raise _fail(f"provider returned status {response.status_code}")
+        raise _fail(
+            f"provider returned status {response.status_code}",
+            retryable=response.status_code >= 500,
+        )
     try:
         payload = response.json()
     except ValueError:

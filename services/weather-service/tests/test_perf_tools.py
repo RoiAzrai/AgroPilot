@@ -3,7 +3,6 @@ runs on an ephemeral port; Open-Meteo is never contacted."""
 
 import threading
 from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -27,14 +26,13 @@ def provider_url():
 def test_fake_provider_body_passes_strict_validation(provider_url):
     response = httpx.get(f"{provider_url}/v1/forecast", params={"latitude": 31.25, "longitude": 34.85})
     assert response.status_code == 200
-    now = datetime.now(timezone.utc)
-    forecast = parse_forecast(response.json(), now)
+    forecast = parse_forecast(response.json(), datetime.now(timezone.utc))
     assert forecast.timezone_name == "Asia/Jerusalem"
-    today = now.astimezone(ZoneInfo("Asia/Jerusalem")).date()
+    # The provider's own "today" (it is computed at request time), not a second clock read.
+    today = forecast.days[PAST_DAYS].date
     assert len(forecast.days) == PAST_DAYS + FORECAST_DAYS
     assert sum(d.date < today for d in forecast.days) == PAST_DAYS
     assert forecast.days[0].date == today - timedelta(days=PAST_DAYS)
-    assert forecast.days[PAST_DAYS].date == today
 
 
 def test_fake_provider_counts_calls(provider_url):

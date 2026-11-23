@@ -88,6 +88,7 @@ class ForecastCache:
                 forecast = await self._attempts(cell)
             self._forecasts[cell] = forecast
             self._paused_until.pop(cell, None)
+            self._evict(self._clock())
             outcome = None
         except TimeoutError:
             outcome, pause = "refresh deadline exceeded", True
@@ -111,8 +112,20 @@ class ForecastCache:
                 return await self._fetch(cell)
             except ProviderError as exc:
                 logger.warning("attempt %d/%d failed for cell %s: %s", attempt, attempts, cell, exc)
+                if not exc.retryable:
+                    raise
                 last = exc
         raise last
+
+    def _evict(self, now: datetime) -> None:
+        """Sweep on store, O(entries): drop forecasts past max-stale (never served
+        again) and pauses that have expired. `_refreshing` is not touched, so a
+        waiter of a running refresh still gets its entry."""
+        max_stale = self._settings.forecast_max_stale_seconds
+        for cell in [c for c, f in self._forecasts.items() if self._age(f, now) > max_stale]:
+            del self._forecasts[cell]
+        for cell in [c for c, until in self._paused_until.items() if now >= until]:
+            del self._paused_until[cell]
 
     def _paused(self, cell: Cell, now: datetime) -> bool:
         paused_until = self._paused_until.get(cell)

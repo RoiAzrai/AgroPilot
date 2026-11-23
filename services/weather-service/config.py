@@ -12,14 +12,14 @@ class Settings(BaseSettings):
 
     provider_base_url: str
     provider_api_key: str = ""
-    provider_attempt_timeout_seconds: float = Field(1.5, ge=0)
+    provider_attempt_timeout_seconds: float = Field(1.5, gt=0)
     provider_retries: int = Field(2, ge=0)
     provider_retry_backoff_seconds: float = Field(0.2, ge=0)
-    refresh_deadline_seconds: float = Field(5, ge=0)
-    forecast_fresh_seconds: float = Field(10800, ge=0)
+    refresh_deadline_seconds: float = Field(5, gt=0)
+    forecast_fresh_seconds: float = Field(10800, gt=0)
     forecast_max_stale_seconds: float = Field(86400, ge=0)
     failure_pause_seconds: float = Field(60, ge=0)
-    retry_after_seconds: int = Field(5, ge=0)
+    retry_after_seconds: int = Field(5, ge=1)
 
 
 def get_settings() -> Settings:
@@ -38,6 +38,18 @@ def get_settings() -> Settings:
     if settings.provider_attempt_timeout_seconds >= settings.refresh_deadline_seconds:
         raise RuntimeError(
             "PROVIDER_ATTEMPT_TIMEOUT_SECONDS must be below REFRESH_DEADLINE_SECONDS."
+        )
+    budget = (
+        (1 + settings.provider_retries) * settings.provider_attempt_timeout_seconds
+        + settings.provider_retries * settings.provider_retry_backoff_seconds
+    )
+    if budget > settings.refresh_deadline_seconds:
+        raise RuntimeError(
+            "The attempts do not fit in the deadline: (1 + PROVIDER_RETRIES"
+            f"={settings.provider_retries}) * PROVIDER_ATTEMPT_TIMEOUT_SECONDS"
+            f"={settings.provider_attempt_timeout_seconds} + PROVIDER_RETRIES * "
+            f"PROVIDER_RETRY_BACKOFF_SECONDS={settings.provider_retry_backoff_seconds} "
+            f"is {budget:g}, above REFRESH_DEADLINE_SECONDS={settings.refresh_deadline_seconds}."
         )
     if settings.forecast_fresh_seconds > settings.forecast_max_stale_seconds:
         raise RuntimeError(
