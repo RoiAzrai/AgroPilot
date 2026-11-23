@@ -14,7 +14,7 @@ TIMEOUT_KEYS = [
     "WEATHER_REFRESH_DEADLINE_SECONDS",
 ]
 FLOAT_KEYS = TIMEOUT_KEYS + ["DEPLETION_FRACTION_OVERRIDE"]
-NUMERIC_KEYS = FLOAT_KEYS + ["MAX_DAILY_RUN_MINUTES", "RETRY_AFTER_SECONDS"]
+NUMERIC_KEYS = FLOAT_KEYS + ["MAX_DAILY_RUN_MINUTES", "RETRY_AFTER_SECONDS", "UPSTREAM_MAX_CONNECTIONS"]
 
 
 @pytest.fixture(autouse=True)
@@ -36,6 +36,7 @@ def test_defaults():
     assert s.weather_refresh_deadline_seconds == 5
     assert s.retry_after_seconds == 5
     assert s.max_daily_run_minutes == 1440
+    assert s.upstream_max_connections == 20
     assert s.depletion_fraction_override is None
 
 
@@ -98,6 +99,18 @@ def test_inf_nan_rejected(monkeypatch, key, value):
 def test_timeouts_must_be_positive(monkeypatch, key, value):
     monkeypatch.setenv(key, value)
     with pytest.raises(RuntimeError, match=key):
+        get_settings()
+
+
+def test_upstream_max_connections_is_read_from_the_environment(monkeypatch):
+    monkeypatch.setenv("UPSTREAM_MAX_CONNECTIONS", "7")
+    assert get_settings().upstream_max_connections == 7
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "-20"])
+def test_upstream_max_connections_must_be_above_zero(monkeypatch, value):
+    monkeypatch.setenv("UPSTREAM_MAX_CONNECTIONS", value)
+    with pytest.raises(RuntimeError, match="UPSTREAM_MAX_CONNECTIONS"):
         get_settings()
 
 

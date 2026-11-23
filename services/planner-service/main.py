@@ -60,13 +60,15 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-POOL_LIMITS = httpx.Limits(max_connections=20, max_keepalive_connections=10)
-
-
-def make_client() -> httpx.AsyncClient:
+def make_client(max_connections: int) -> httpx.AsyncClient:
     # timeout=None: asyncio.timeout in upstream.py is the only bound, so the configured
     # REGISTRY/WEATHER timeouts are not cut short by httpx's built-in 5 s.
-    return httpx.AsyncClient(timeout=None, limits=POOL_LIMITS)
+    # Keep-alive stays at 10, but never above the maximum.
+    limits = httpx.Limits(
+        max_connections=max_connections,
+        max_keepalive_connections=min(10, max_connections),
+    )
+    return httpx.AsyncClient(timeout=None, limits=limits)
 
 
 async def _gather_or_cancel(*coros: Coroutine[Any, Any, Any]) -> list[Any]:
@@ -84,7 +86,7 @@ async def _gather_or_cancel(*coros: Coroutine[Any, Any, Any]) -> list[Any]:
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()  # fails fast on invalid settings
     # make_client is looked up at call time, so tests can replace it.
-    async with make_client() as client:
+    async with make_client(settings.upstream_max_connections) as client:
         app.state.settings = settings
         app.state.upstream = Upstream(client, settings)
         yield
@@ -110,6 +112,8 @@ async def plan(
     upstream: Upstream = request.app.state.upstream
 
     plot = await upstream.get_plot(plot_id)  # its ids and lat/lon are needed first
+    # Before the parallel calls: a crop without coefficients is a 422 whatever else is down.
+    get_crop(plot.crop_id)
     soil_water, flow_lph, _, forecast = await _gather_or_cancel(
         upstream.get_soil_water(plot.soil_id),
         upstream.get_flow_lph(plot.emitter_id),
@@ -167,6 +171,8 @@ async def bucket_suggestion(
 
     irrigated_on = _parse_last_irrigation(last_irrigation)  # 1
     plot = await upstream.get_plot(plot_id)  # 2
+    # Before the parallel calls: a crop without coefficients is a 422 whatever else is down.
+    crop = get_crop(plot.crop_id)
     # One weather call: today is the date after the past days (design Q1).
     # The emitter is not fetched: the suggestion never uses flow_lph.
     soil_water, _, forecast = await _gather_or_cancel(
@@ -190,7 +196,6 @@ async def bucket_suggestion(
             stale=forecast.stale,
         )
 
-    crop = get_crop(plot.crop_id)
     if stage(crop, season_day(today, plot.planting_date)) == "ended":  # 3: wins over 4
         return answer(None, False, "season_ended", 0, 0)
     try:

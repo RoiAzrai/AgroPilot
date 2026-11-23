@@ -271,3 +271,31 @@ def test_answer_does_not_depend_on_the_clock_only_on_weather_today(client, fake,
     monkeypatch.setattr(main, "utc_now", lambda: datetime(2031, 6, 4, 12, tzinfo=UTC))
     after = client.get(url(days_back(4)))
     assert after.json() == before.json()
+
+
+# P2: the same input gives the same error status, whichever call would fail first.
+WEATHER_DOWN_FIRST = dict(forecast=dict(exc=httpx.ConnectError("down")),
+                          crop=dict(status=500, content=b"x", delay=0.05))
+WEATHER_DOWN_LAST = dict(forecast=dict(status=503, content=b"", delay=0.05),
+                         crop=dict(status=500, content=b"x"))
+
+
+@pytest.mark.parametrize("timing", [WEATHER_DOWN_FIRST, WEATHER_DOWN_LAST], ids=["weather first", "crop first"])
+@pytest.mark.parametrize("crop_id", ["wheat", "no-such-crop"])
+def test_weather_down_and_unusable_crop_is_always_422(client, fake, timing, crop_id):
+    case4(fake)
+    fake.bodies["plot"]["crop_id"] = crop_id  # the engine has no coefficients for it
+    fake.known["crop"] = crop_id if crop_id == "wheat" else "tomato"
+    for route, kwargs in timing.items():
+        fake.override(route, **kwargs)
+    body = assert_problem(client.get(url(days_back(3))), 422, "VALIDATION")
+    assert "no irrigation coefficients" in body["detail"]
+
+
+def test_weather_down_with_a_healthy_crop_is_still_503_with_retry_after(client, fake):
+    case4(fake)
+    fake.override("forecast", status=503, content=b"", headers={"Retry-After": "9"}, delay=0.05)
+    response = client.get(url(days_back(3)))
+    body = assert_problem(response, 503, "UPSTREAM_UNAVAILABLE")
+    assert body["detail"] == f"{WEATHER} is unavailable"
+    assert response.headers["retry-after"] == "9"

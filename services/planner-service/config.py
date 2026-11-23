@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     depletion_fraction_override: float | None = Field(None, ge=0, le=1)
     weather_refresh_deadline_seconds: float = Field(5, gt=0)
     retry_after_seconds: int = Field(5, ge=1)
+    upstream_max_connections: int = Field(20, gt=0)
 
 
 def get_settings() -> Settings:

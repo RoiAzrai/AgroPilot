@@ -285,7 +285,7 @@ def test_parallel_calls_after_the_plot(monkeypatch):
     monkeypatch.setenv("REGISTRY_URL", "http://registry.invalid")
     monkeypatch.setenv("WEATHER_URL", "http://weather.invalid")
     monkeypatch.setattr(
-        main, "make_client", lambda: httpx.AsyncClient(transport=fake.transport())
+        main, "make_client", lambda _max: httpx.AsyncClient(transport=fake.transport())
     )
     with TestClient(main.app, raise_server_exceptions=False) as client:
         response = client.get(plan_url())
@@ -305,7 +305,7 @@ def test_invalid_settings_fail_the_start(monkeypatch):
 
 def test_http_client_has_no_httpx_timeout_so_asyncio_timeout_is_the_only_bound():
     async def build():
-        async with main.make_client() as client:
+        async with main.make_client(20) as client:
             return client.timeout
 
     assert asyncio.run(build()) == httpx.Timeout(None)  # httpx's default is a 5 s cut-off
@@ -321,3 +321,58 @@ def test_plan_weather_with_one_extra_day_is_500(client, fake):
     case1(fake)
     fake.edit("forecast", _one_extra_day)
     assert_problem(client.get(plan_url()), 500, "INTERNAL")
+
+
+def test_client_is_built_with_the_configured_connection_limit(monkeypatch):
+    fake = FakeUpstreams()
+    seen = []
+
+    def record(max_connections):
+        seen.append(max_connections)
+        return httpx.AsyncClient(transport=fake.transport())
+
+    monkeypatch.setenv("REGISTRY_URL", "http://registry.invalid")
+    monkeypatch.setenv("WEATHER_URL", "http://weather.invalid")
+    monkeypatch.setenv("UPSTREAM_MAX_CONNECTIONS", "7")
+    monkeypatch.setattr(main, "make_client", record)
+    with TestClient(main.app):
+        pass
+    assert seen == [7]
+
+
+@pytest.mark.parametrize("maximum, keepalive", [(20, 10), (10, 10), (4, 4), (1, 1)])
+def test_pool_limits_keepalive_never_above_maximum(maximum, keepalive):
+    async def build():
+        async with main.make_client(maximum) as client:
+            pool = client._transport._pool  # httpx has no public getter for the limits
+            return pool._max_connections, pool._max_keepalive_connections
+
+    assert asyncio.run(build()) == (maximum, keepalive)
+
+
+# P2: the same input gives the same error status, whichever call would fail first.
+WEATHER_DOWN_FIRST = dict(forecast=dict(exc=httpx.ConnectError("down")),
+                          crop=dict(status=500, content=b"x", delay=0.05))
+WEATHER_DOWN_LAST = dict(forecast=dict(status=503, content=b"", delay=0.05),
+                         crop=dict(status=500, content=b"x"))
+
+
+@pytest.mark.parametrize("timing", [WEATHER_DOWN_FIRST, WEATHER_DOWN_LAST], ids=["weather first", "crop first"])
+@pytest.mark.parametrize("crop_id", ["wheat", "no-such-crop"])
+def test_weather_down_and_unusable_crop_is_always_422(client, fake, timing, crop_id):
+    case1(fake)
+    fake.bodies["plot"]["crop_id"] = crop_id  # the engine has no coefficients for it
+    fake.known["crop"] = crop_id if crop_id == "wheat" else "tomato"
+    for route, kwargs in timing.items():
+        fake.override(route, **kwargs)
+    body = assert_problem(client.get(plan_url()), 422, "VALIDATION")
+    assert "no irrigation coefficients" in body["detail"]
+
+
+def test_weather_down_with_a_healthy_crop_is_still_503_with_retry_after(client, fake):
+    case1(fake)
+    fake.override("forecast", status=503, content=b"", headers={"Retry-After": "9"}, delay=0.05)
+    response = client.get(plan_url())
+    body = assert_problem(response, 503, "UPSTREAM_UNAVAILABLE")
+    assert body["detail"] == f"{WEATHER} is unavailable"
+    assert response.headers["retry-after"] == "9"

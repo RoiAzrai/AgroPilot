@@ -32,6 +32,9 @@ Read from `.env`. Only the keys below are allowed: an unknown key (a typo too) s
 | `DEPLETION_FRACTION_OVERRIDE` | no | unset (each crop keeps its own p) | replaces the depletion fraction p for every crop | 0..1 when set; an empty value is an error |
 | `WEATHER_REFRESH_DEADLINE_SECONDS` | no | `5` | weather-service's refresh deadline; keep it equal to weather-service's value | finite, above 0 |
 | `RETRY_AFTER_SECONDS` | no | `5` | `Retry-After` of a 503 when the upstream sent none | integer, at least 1 |
+| `UPSTREAM_MAX_CONNECTIONS` | no | `20` | most open connections to registry-service and weather-service together (connections, not seconds); the keep-alive count is 10, or this value when it is lower | integer, above 0 |
+
+If `UPSTREAM_MAX_CONNECTIONS` is too low, requests wait for a free connection. The wait counts against the call's timeout, so a request can end as a 503 that blames the wrong service (for example registry-service, while the connections are held by slow weather calls). One plan request uses up to 4 connections.
 
 Startup check: the service refuses to start when `WEATHER_TIMEOUT_SECONDS` is not above `WEATHER_REFRESH_DEADLINE_SECONDS`. Otherwise a weather call could be cut off before weather's own deadline answer (stale data or a 503) arrives.
 

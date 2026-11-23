@@ -19,6 +19,7 @@ SERVICE_KEYS = [
     "DEPLETION_FRACTION_OVERRIDE",
     "WEATHER_REFRESH_DEADLINE_SECONDS",
     "RETRY_AFTER_SECONDS",
+    "UPSTREAM_MAX_CONNECTIONS",
 ]
 
 
@@ -40,7 +41,7 @@ def client(monkeypatch, fake):
     monkeypatch.setenv("REGISTRY_URL", "http://registry.invalid")
     monkeypatch.setenv("WEATHER_URL", "http://weather.invalid")
     monkeypatch.setattr(
-        main, "make_client", lambda: httpx.AsyncClient(transport=fake.transport())
+        main, "make_client", lambda _max: httpx.AsyncClient(transport=fake.transport())
     )
     # raise_server_exceptions=False: a bug must reach the 500 handler, as in production.
     with TestClient(main.app, raise_server_exceptions=False) as test_client:
