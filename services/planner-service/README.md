@@ -16,7 +16,7 @@ uv run uvicorn main:app --port 8002
 uv run pytest -W error -q
 ```
 
-The test run gives 455 passed. The tests use fakes only: they never call the real registry, weather or Open-Meteo, and never touch a database.
+The test run gives 477 passed. The tests use fakes only: they never call the real registry, weather or Open-Meteo, and never touch a database.
 
 ## Settings
 

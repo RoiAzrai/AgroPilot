@@ -5,7 +5,16 @@ AgroPilot helps a grower manage agricultural crops with modern AI.
 
 ## Where to start
 
-Services live under `services/`. The service in the repository today is `registry-service`, a FastAPI application. 
+Services live under `services/`:
+
+| Service | Port | Purpose |
+| --- | --- | --- |
+| [registry-service](services/registry-service/README.md) | 8000 | Farms, plots and catalogues. |
+| [weather-service](services/weather-service/README.md) | 8001 | Daily forecast (ET0 and rain) from Open-Meteo. |
+| [planner-service](services/planner-service/README.md) | 8002 | Irrigation plan for a plot. |
+| [frontend](services/frontend/README.md) | 3000 | The web UI. |
+
+The steps below start `registry-service`, a FastAPI application.
 
 ```bash
 cd services/registry-service

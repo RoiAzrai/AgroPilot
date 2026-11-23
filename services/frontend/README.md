@@ -65,7 +65,7 @@ Open http://localhost:3000.
 - `npm run build`: production build.
 - `npm run start`: runs the production build on port 3000 (run `npm run build` first).
 - `npm run lint`: runs ESLint.
-- `npm test`: runs the unit tests in `src/lib/*.test.ts` with `tsx --test`.
+- `npm test`: runs the unit tests in `src/lib/*.test.ts` with `tsx --experimental-test-module-mocks --test`. The flag lets the tests mock modules, because the server actions import `server-only`.
 
 ## How it works
 

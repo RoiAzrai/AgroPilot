@@ -139,7 +139,7 @@ sequenceDiagram
 
 ## Known limitations
 
-- **The cache is unbounded** (a known limitation: one entry per cell, no eviction). Requests with random coordinates could grow memory. Fine for the planner's use (a few plots); a limit is future work.
+- **The cache is bounded only by time.** When a new forecast is stored, entries older than `FORECAST_MAX_STALE_SECONDS` are removed, and so are expired failure pauses (only after a successful store). The sweep costs O(entries) per store. Memory is bounded by the cells loaded in the last max-stale period, so requests with many different coordinates can still grow it within that period. A limit on the number of cells is future work.
 - One worker process only (see Run).
 - **One bad past day hides every older day** of that cell for as long as fetches keep returning it, up to 92 days, until its date leaves the window. The days after it, and the forecast, are still served, and `past_days_returned` says how many past days came back.
 
