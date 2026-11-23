@@ -39,7 +39,8 @@ Then create the tables and load the 15 seed rows:
 
 ```bash
 uv run python seed_db.py            # refuses if any of the five tables already exists
-uv run python seed_db.py --reset    # prints the target first, then drops all registry data and rebuilds
+uv run python seed_db.py --reset    # prints the target, asks you to type the database name, then drops all registry data and rebuilds
+uv run python seed_db.py --reset --yes   # the same without the question (for scripts)
 ```
 
-`--reset` deletes every row in the registry tables of the database named by `DATABASE_URL`. Check the printed target before relying on it.
+`--reset` deletes every row in the registry tables of the database named by `DATABASE_URL`. It prints the target (the database the driver will really use, including `?dbname=` and `?host=` from the URL) and asks you to type its name: the file name for SQLite, the database name for PostgreSQL. Without a terminal it refuses unless `--yes` is passed.

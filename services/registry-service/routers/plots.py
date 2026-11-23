@@ -105,14 +105,18 @@ def update_plot(plot_id: str, body: PlotUpdate, conn: Db) -> Plot:
     changes = body.model_dump(exclude_unset=True)
     values = merge(PlotCreate, _get_plot(conn, plot_id), changes).model_dump(mode="json")
     check_references(conn, {field: values[field] for field in changes})
-    changed = _write(
-        conn,
-        f"UPDATE plots SET {', '.join(f'{field} = :{field}' for field in _FIELDS)}"
-        " WHERE id = :id",
-        {**values, "id": plot_id},
-    )
-    if changed == 0:
-        raise not_found("Plot not found")
+    # Write only the sent fields, so a concurrent PATCH of other fields is not overwritten.
+    # Column names come from _FIELDS, never from the request.
+    columns = [field for field in _FIELDS if field in changes]
+    if columns:
+        changed = _write(
+            conn,
+            f"UPDATE plots SET {', '.join(f'{field} = :{field}' for field in columns)}"
+            " WHERE id = :id",
+            {**{field: values[field] for field in columns}, "id": plot_id},
+        )
+        if changed == 0:
+            raise not_found("Plot not found")
     return Plot(id=plot_id, **values)
 
 

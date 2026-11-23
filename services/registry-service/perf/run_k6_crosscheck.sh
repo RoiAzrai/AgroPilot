@@ -195,7 +195,7 @@ if [[ "$DB" == "large" ]]; then
 elif [[ "$DB" == "postgres" ]]; then
   # Reset and seed registry_perf (checked in the pre-flight); the server inherits DATABASE_URL.
   export DATABASE_URL="$PERF_DATABASE_URL"
-  uv run python seed_db.py --reset | tee "$RESULTS/$RESULTS_PREFIX-seed-db.txt"
+  uv run python seed_db.py --reset --yes | tee "$RESULTS/$RESULTS_PREFIX-seed-db.txt"
 else
   bash seed_registry.sh
   export DATABASE_URL="sqlite:///file:$PWD/registry.db?mode=rw&uri=true"

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pydantic import ValidationError
+from pydantic import Field, ValidationError
 from pydantic_settings import BaseSettings
 
 ENV_FILE = Path(__file__).parent / ".env"
@@ -8,9 +8,10 @@ ENV_FILE = Path(__file__).parent / ".env"
 
 class Settings(BaseSettings):
     database_url: str
-    db_connect_timeout_seconds: int = 3
-    db_busy_timeout_seconds: float = 5
-    db_pool_timeout_seconds: float = 5
+    # gt=0: 0 means "wait forever" in PostgreSQL, and a negative value fails every connect.
+    db_connect_timeout_seconds: int = Field(3, gt=0)
+    db_busy_timeout_seconds: float = Field(5, gt=0)
+    db_pool_timeout_seconds: float = Field(5, gt=0)
 
 
 def get_settings() -> Settings:

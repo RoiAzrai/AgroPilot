@@ -1,6 +1,27 @@
 import pytest
+from pydantic import ValidationError
 
 import config
+
+TIMEOUT_KEYS = (
+    "DB_CONNECT_TIMEOUT_SECONDS",
+    "DB_BUSY_TIMEOUT_SECONDS",
+    "DB_POOL_TIMEOUT_SECONDS",
+)
+
+
+@pytest.mark.parametrize("key", TIMEOUT_KEYS)
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_timeouts_must_be_above_zero(monkeypatch, tmp_path, key, value):
+    # 0 means "wait forever" in PostgreSQL; a negative value fails every connect.
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///file:x.db?mode=rw&uri=true")
+    monkeypatch.setattr(config, "ENV_FILE", tmp_path / "none.env")
+    monkeypatch.setenv(key, value)
+    with pytest.raises(ValidationError) as exc:
+        config.get_settings()
+    [error] = exc.value.errors()
+    assert error["loc"] == (key.lower(),)
+    assert error["type"] == "greater_than"
 
 
 def test_reads_database_url_from_environment(monkeypatch, tmp_path):

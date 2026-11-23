@@ -13,6 +13,8 @@ router = APIRouter(prefix="/v1/farms", tags=["farms"])
 
 Db = Annotated[Connection, Depends(get_db)]
 
+_FIELDS = tuple(FarmCreate.model_fields)
+
 
 def _farm_id(raw: str) -> str:
     farm_id = canonical_uuid(raw)
@@ -55,15 +57,22 @@ def get_farm(farm_id: str, conn: Db) -> Farm:
 @router.patch("/{farm_id}", response_model=Farm)
 def update_farm(farm_id: str, body: FarmUpdate, conn: Db) -> Farm:
     farm_id = _farm_id(farm_id)
-    updated = merge(FarmCreate, _get_farm(conn, farm_id), body.model_dump(exclude_unset=True))
-    changed = conn.execute(
-        text("UPDATE farms SET name = :name WHERE id = :id"),
-        {"name": updated.name, "id": farm_id},
-    ).rowcount
-    conn.commit()
-    if changed == 0:
-        raise not_found("Farm not found")
-    return Farm(id=farm_id, name=updated.name)
+    changes = body.model_dump(exclude_unset=True)
+    updated = merge(FarmCreate, _get_farm(conn, farm_id), changes).model_dump()
+    # Write only the sent fields. Column names come from _FIELDS, never from the request.
+    columns = [field for field in _FIELDS if field in changes]
+    if columns:
+        changed = conn.execute(
+            text(
+                f"UPDATE farms SET {', '.join(f'{field} = :{field}' for field in columns)}"
+                " WHERE id = :id"
+            ),
+            {**{field: updated[field] for field in columns}, "id": farm_id},
+        ).rowcount
+        conn.commit()
+        if changed == 0:
+            raise not_found("Farm not found")
+    return Farm(id=farm_id, name=updated["name"])
 
 
 @router.delete("/{farm_id}", status_code=204, response_class=Response)

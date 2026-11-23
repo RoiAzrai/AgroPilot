@@ -2,7 +2,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from conftest import assert_problem
+from conftest import assert_problem, updates
 from routers import plots
 
 DEMO_COOPERATIVE = "b7e2c0a0-3c1d-4f0a-9a11-0c5d2e6f1001"
@@ -186,6 +186,38 @@ def test_patch_changes_only_the_sent_field(client):
     assert response.status_code == 200
     assert response.json() == {**before, "area_m2": 1250}
     assert client.get(f"/v1/plots/{NORTH_BLOCK}").json() == {**before, "area_m2": 1250}
+
+
+def test_patch_of_one_field_updates_only_that_column(client, sql_log):
+    response = client.patch(f"/v1/plots/{NORTH_BLOCK}", json={"area_m2": 1250})
+    assert response.status_code == 200
+    assert updates(sql_log) == [("UPDATE plots SET area_m2 = ? WHERE id = ?", (1250.0, NORTH_BLOCK))]
+
+
+def test_patch_of_two_fields_updates_only_those_columns(client, sql_log):
+    response = client.patch(f"/v1/plots/{NORTH_BLOCK}", json={"lon": 34.8, "name": "N2"})
+    assert response.status_code == 200
+    # Column order is the model's field order, not the request's.
+    assert updates(sql_log) == [
+        ("UPDATE plots SET name = ?, lon = ? WHERE id = ?", ("N2", 34.8, NORTH_BLOCK))
+    ]
+
+
+def test_patch_empty_body_writes_nothing(client, sql_log):
+    assert client.patch(f"/v1/plots/{NORTH_BLOCK}", json={}).status_code == 200
+    assert updates(sql_log) == []
+
+
+def test_patch_keeps_a_concurrent_change_to_another_field(client, monkeypatch):
+    # PATCH A reads the plot; PATCH B renames it; then A writes area_m2 from its old read.
+    stale = client.get(f"/v1/plots/{NORTH_BLOCK}").json()
+    assert client.patch(f"/v1/plots/{NORTH_BLOCK}", json={"name": "Renamed by B"}).status_code == 200
+    real_get_plot = plots._get_plot
+    monkeypatch.setattr(plots, "_get_plot", lambda conn, plot_id: stale)
+    assert client.patch(f"/v1/plots/{NORTH_BLOCK}", json={"area_m2": 1250}).status_code == 200
+    monkeypatch.setattr(plots, "_get_plot", real_get_plot)
+    stored = client.get(f"/v1/plots/{NORTH_BLOCK}").json()
+    assert stored == {**stale, "name": "Renamed by B", "area_m2": 1250}
 
 
 def test_patch_empty_body_leaves_plot_unchanged(client):

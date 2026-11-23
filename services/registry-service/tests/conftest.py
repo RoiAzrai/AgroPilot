@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import event
 
 from config import get_settings
 from db import DEFAULT_DB_PATH
@@ -42,6 +43,25 @@ def db_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def client(db_file: Path) -> TestClient:
     with TestClient(app) as test_client:
         yield test_client
+
+
+@pytest.fixture
+def sql_log(client: TestClient) -> list[tuple[str, tuple]]:
+    """Every (statement, parameters) sent to the database during the test, as the driver
+    gets them: SQLite uses `?` placeholders and a tuple of values."""
+    statements: list[tuple[str, tuple]] = []
+
+    def record(conn, cursor, statement, parameters, context, executemany) -> None:
+        statements.append((statement, tuple(parameters)))
+
+    engine = client.app.state.engine
+    event.listen(engine, "before_cursor_execute", record)
+    yield statements
+    event.remove(engine, "before_cursor_execute", record)
+
+
+def updates(statements: list[tuple[str, tuple]]) -> list[tuple[str, tuple]]:
+    return [(sql, params) for sql, params in statements if sql.lstrip().upper().startswith("UPDATE")]
 
 
 def assert_problem(response, status: int, code: str) -> dict:

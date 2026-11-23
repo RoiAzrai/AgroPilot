@@ -2,7 +2,8 @@
 
 Usage, from services/registry-service:
     uv run python seed_db.py            # create tables + load seed rows
-    uv run python seed_db.py --reset    # drop and rebuild the five tables
+    uv run python seed_db.py --reset    # drop and rebuild the five tables (asks first)
+    uv run python seed_db.py --reset --yes   # the same, without asking (scripts)
 """
 
 import argparse
@@ -154,16 +155,53 @@ def create_and_seed(engine: Engine, *, reset: bool) -> None:
             conn.execute(metadata.tables[name].insert(), SEED_ROWS[name])
 
 
+def _sqlite_path(url: URL) -> Path:
+    database = url.database or ""
+    if database.startswith("file:"):
+        database = database[len("file:"):]
+    return Path(database).resolve()
+
+
+def _driver_params(url: URL) -> dict[str, Any]:
+    """The connect parameters the driver receives. The dialect builds them, so
+    `?dbname=`, `?host=`, `?port=` and `?user=` win over the URL's path and host."""
+    _, params = url.get_dialect()().create_connect_args(url)
+    return params
+
+
 def describe_target(url: URL) -> str:
     if url.get_backend_name() == "sqlite":
-        database = url.database or ""
-        if database.startswith("file:"):
-            database = database[len("file:"):]
-        return f"sqlite file {Path(database).resolve()}"
+        return f"sqlite file {_sqlite_path(url)}"
+    params = _driver_params(url)
     return (
-        f"{url.get_backend_name()} database '{url.database}' "
-        f"on {url.host}:{url.port} as {url.username}"
+        f"{url.get_backend_name()} database '{params.get('dbname')}' "
+        f"on {params.get('host')}:{params.get('port')} as {params.get('user')}"
     )
+
+
+def database_name(url: URL) -> str:
+    """The name the user types to confirm --reset: the file name, or the database name."""
+    if url.get_backend_name() == "sqlite":
+        return _sqlite_path(url).name
+    return str(_driver_params(url).get("dbname"))
+
+
+def confirm_reset(name: str, *, yes: bool) -> bool:
+    """True when the reset may go ahead. Without --yes, a person at a terminal must
+    type the database name; with no terminal, the reset is refused."""
+    if yes:
+        return True
+    if not sys.stdin.isatty():
+        print("Refusing --reset without a terminal; pass --yes to confirm.", file=sys.stderr)
+        return False
+    try:
+        answer = input(f"Type the database name ({name}) to delete all registry data: ")
+    except EOFError:
+        answer = ""
+    if answer.strip() != name:
+        print("Not confirmed; nothing was changed.", file=sys.stderr)
+        return False
+    return True
 
 
 def seed_url(database_url: str) -> str:
@@ -176,13 +214,18 @@ def seed_url(database_url: str) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Create and seed the registry tables.")
     parser.add_argument("--reset", action="store_true", help="drop and rebuild the tables")
+    parser.add_argument(
+        "--yes", action="store_true", help="with --reset: skip the confirmation prompt"
+    )
     args = parser.parse_args(argv)
 
     settings = get_settings()
     database_url = settings.database_url
     target = describe_target(make_url(database_url))
     if args.reset:
-        print(f"Resetting {target}")
+        print(f"Resetting {target}", flush=True)
+        if not confirm_reset(database_name(make_url(database_url)), yes=args.yes):
+            return 1
     url = seed_url(database_url)
     if make_url(url).get_backend_name() == "postgresql":
         engine = create_engine(

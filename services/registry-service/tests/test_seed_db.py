@@ -145,13 +145,107 @@ def test_existing_tables_are_refused(target, capsys):
     assert ("Renamed",) in sqlite3.connect(target).execute("SELECT name FROM farms").fetchall()
 
 
-def test_reset_rebuilds(target, tmp_path, capsys):
+def _renamed_kept(path: Path) -> bool:
+    con = sqlite3.connect(path)
+    try:
+        return ("Renamed",) in con.execute("SELECT name FROM farms").fetchall()
+    finally:
+        con.close()
+
+
+def _terminal(monkeypatch, answer):
+    """stdin is a terminal; `answer` is what the person types (an exception is raised)."""
+    asked = []
+
+    def fake_input(prompt):
+        asked.append(prompt)
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr("builtins.input", fake_input)
+    return asked
+
+
+def test_reset_with_yes_rebuilds_without_asking(target, tmp_path, monkeypatch, capsys):
     assert seed_db.main([]) == 0
     _rename_farm(target)
     capsys.readouterr()
-    assert seed_db.main(["--reset"]) == 0
+    monkeypatch.setattr("builtins.input", lambda prompt: pytest.fail("must not ask"))
+    assert seed_db.main(["--reset", "--yes"]) == 0
     assert capsys.readouterr().out.startswith("Resetting sqlite file")
     assert _dump(target) == _reference_rows(tmp_path)
+
+
+def test_reset_confirmed_by_typing_the_name(target, tmp_path, monkeypatch, capsys):
+    assert seed_db.main([]) == 0
+    _rename_farm(target)
+    capsys.readouterr()
+    asked = _terminal(monkeypatch, " new.db \n")
+    assert seed_db.main(["--reset"]) == 0
+    assert asked == ["Type the database name (new.db) to delete all registry data: "]
+    out = capsys.readouterr().out
+    assert out.startswith(f"Resetting sqlite file {target.resolve()}")
+    assert _dump(target) == _reference_rows(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "answer", ["registry.db", "", "y", EOFError()], ids=["wrong-name", "empty", "y", "ctrl-d"]
+)
+def test_reset_refused_without_the_right_name(target, monkeypatch, capsys, answer):
+    assert seed_db.main([]) == 0
+    _rename_farm(target)
+    capsys.readouterr()
+    _terminal(monkeypatch, answer)
+    assert seed_db.main(["--reset"]) == 1
+    assert "Not confirmed; nothing was changed." in capsys.readouterr().err
+    assert _renamed_kept(target)
+
+
+def test_reset_without_terminal_or_yes_is_refused(target, monkeypatch, capsys):
+    assert seed_db.main([]) == 0
+    _rename_farm(target)
+    capsys.readouterr()
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False, raising=False)
+    monkeypatch.setattr("builtins.input", lambda prompt: pytest.fail("must not ask"))
+    assert seed_db.main(["--reset"]) == 1
+    assert "pass --yes" in capsys.readouterr().err
+    assert _renamed_kept(target)
+
+
+def test_without_reset_nothing_is_asked(target, monkeypatch, capsys):
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr("builtins.input", lambda prompt: pytest.fail("must not ask"))
+    assert seed_db.main([]) == 0
+    assert capsys.readouterr().out.startswith("Created and seeded sqlite file")
+
+
+def test_confirm_name_of_a_postgres_url_is_the_driver_dbname():
+    url = make_url("postgresql+psycopg://alice:pw@db.example:5432/registry?dbname=registry_perf")
+    assert seed_db.database_name(url) == "registry_perf"
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        (
+            "postgresql+psycopg://alice:pw@db.example:5433/registry?dbname=registry_perf",
+            "postgresql database 'registry_perf' on db.example:5433 as alice",
+        ),
+        (
+            "postgresql+psycopg://alice:pw@db.example:5433/registry?host=other.example",
+            "postgresql database 'registry' on other.example:5433 as alice",
+        ),
+        (
+            "postgresql+psycopg:///?host=/var/run/postgresql&dbname=registry_perf&user=bob",
+            "postgresql database 'registry_perf' on /var/run/postgresql:None as bob",
+        ),
+    ],
+    ids=["query-dbname", "query-host", "query-only"],
+)
+def test_describe_target_shows_what_the_driver_uses(url, expected):
+    assert seed_db.describe_target(make_url(url)) == expected
 
 
 def test_describe_target_never_shows_password():

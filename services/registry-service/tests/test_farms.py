@@ -3,7 +3,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from conftest import assert_problem
+from conftest import assert_problem, updates
 from routers import farms
 
 DEMO_COOPERATIVE = "b7e2c0a0-3c1d-4f0a-9a11-0c5d2e6f1001"
@@ -83,6 +83,16 @@ def test_patch_empty_body_leaves_farm_unchanged(client):
     response = client.patch(f"/v1/farms/{EAST_FARM}", json={})
     assert response.status_code == 200
     assert response.json() == {"id": EAST_FARM, "name": "East farm"}
+
+
+def test_patch_name_updates_only_the_name_column(client, sql_log):
+    assert client.patch(f"/v1/farms/{EAST_FARM}", json={"name": "West farm"}).status_code == 200
+    assert updates(sql_log) == [("UPDATE farms SET name = ? WHERE id = ?", ("West farm", EAST_FARM))]
+
+
+def test_patch_empty_body_writes_nothing(client, sql_log):
+    assert client.patch(f"/v1/farms/{EAST_FARM}", json={}).status_code == 200
+    assert updates(sql_log) == []
 
 
 @pytest.mark.parametrize(

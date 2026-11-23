@@ -667,7 +667,7 @@ Set `PERF_DATABASE_URL` to the `registry_perf` URL. The pre-flight reads the
 database name from the URL and refuses to start (exit 1, `FAIL: DB=postgres
 needs PERF_DATABASE_URL pointing at the registry_perf database`) unless it is
 exactly `registry_perf`. It then exports `DATABASE_URL` from it, resets and
-seeds the database with `uv run python seed_db.py --reset` (output saved to
+seeds the database with `uv run python seed_db.py --reset --yes` (output saved to
 `perf/results/<prefix>-seed-db.txt`), and starts the server as usual. The
 results metadata records the database as `postgres (registry_perf)`.
 
