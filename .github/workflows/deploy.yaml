@@ -1,0 +1,57 @@
+name: deploy
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.5
+        env:
+          DEPLOY_SHA: ${{ github.sha }}
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          timeout: 60s
+          command_timeout: 22m
+          envs: DEPLOY_SHA
+          script: |
+            set -euo pipefail
+            APP=/home/ubuntu/AgroPilot
+            STATE=/home/ubuntu/.agropilot-deploy
+            mkdir -p "$STATE/scripts" "$STATE/logs"
+            chmod 700 "$STATE"
+
+            # Fetch the commit and run ITS deploy script from a private copy.
+            git -C "$APP" fetch --prune origin main
+            git -C "$APP" cat-file -e "$DEPLOY_SHA^{commit}"
+            STAMP="$(date +%s)-${DEPLOY_SHA:0:7}"
+            SCRIPT="$STATE/scripts/deploy-$STAMP.sh"
+            LOG="$STATE/logs/deploy-$STAMP.log"
+            git -C "$APP" show "$DEPLOY_SHA:deploy/deploy.sh" > "$SCRIPT"
+
+            # Keep only the newest files.
+            ls -1t "$STATE"/scripts/*.sh 2>/dev/null | tail -n +11 | xargs -r rm -f -- || true
+            ls -1t "$STATE"/logs/*.log 2>/dev/null | tail -n +21 | xargs -r rm -f -- || true
+
+            # Run detached: if this SSH session drops, the deploy still finishes.
+            nohup bash "$SCRIPT" "$DEPLOY_SHA" > "$LOG" 2>&1 &
+            PID=$!
+            tail -n +1 -f --pid="$PID" "$LOG" &
+            TAIL_PID=$!
+            RC=0
+            wait "$PID" || RC=$?
+            wait "$TAIL_PID" || true
+            exit "$RC"
