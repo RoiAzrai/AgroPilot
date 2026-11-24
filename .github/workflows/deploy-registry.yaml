@@ -17,8 +17,8 @@ jobs:
           script: |
             set -e
             cd /home/ubuntu/AgroPilot
-            git checkout main
-            git pull
+            git fetch origin main
+            git reset --hard ${{ github.sha }}
             cd services/registry-service
             /home/ubuntu/.local/bin/uv sync --locked
             sudo systemctl restart registry.service
