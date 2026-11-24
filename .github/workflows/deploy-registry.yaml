@@ -1,0 +1,24 @@
+name: deploy-registry
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -e
+            cd /home/ubuntu/AgroPilot
+            git checkout main
+            git pull
+            cd services/registry-service
+            /home/ubuntu/.local/bin/uv sync --locked
+            sudo systemctl restart registry.service
