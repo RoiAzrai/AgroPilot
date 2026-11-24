@@ -40,7 +40,7 @@ jobs:
             # health check with retries
             for i in 1 2 3 4 5; do
               sleep 2
-              code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8999/health || true)
+              code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/health || true)
               if [ "$code" = "200" ]; then
                 echo "healthy"
                 exit 0
