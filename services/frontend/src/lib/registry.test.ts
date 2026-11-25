@@ -8,6 +8,8 @@ type Call = {
   timeoutMs: number;
   baseUrl: string;
   query?: Record<string, string>;
+  method?: string;
+  body?: unknown;
 };
 const serviceFetch = mock.fn(async (opts: Call) => ({ opts, plot_ids: ["p1", "p2"] }));
 const serviceFetchBinary = mock.fn(async (opts: Call) => ({
@@ -66,4 +68,29 @@ test("getPlotPhoto: binary GET /v1/plots/{id}/photo with the photo timeout", asy
   assert.equal(call.baseUrl, "http://registry.test");
   assert.equal(call.path, "/v1/plots/a%20b%2Fc/photo");
   assert.equal(call.timeoutMs, 45000);
+});
+
+test("uploadPlotPhoto: multipart POST with field \"file\" and the photo timeout", async () => {
+  const { uploadPlotPhoto } = await import("./registry");
+  const blob = new Blob([new Uint8Array([1, 2])], { type: "image/jpeg" });
+  await uploadPlotPhoto("a/b", blob);
+  const call = lastCall();
+  assert.equal(call.service, "registry");
+  assert.equal(call.method, "POST");
+  assert.equal(call.path, "/v1/plots/a%2Fb/photo");
+  assert.equal(call.timeoutMs, 45000);
+  assert.ok(call.body instanceof FormData);
+  const file = call.body.get("file");
+  assert.ok(file instanceof File);
+  assert.equal(file.name, "photo.jpg");
+  assert.equal(file.type, "image/jpeg");
+  assert.equal(file.size, 2);
+});
+
+test("uploadPlotPhoto: a File keeps its own name", async () => {
+  const { uploadPlotPhoto } = await import("./registry");
+  await uploadPlotPhoto("p", new File(["x"], "field.png", { type: "image/png" }));
+  const file = (lastCall().body as FormData).get("file") as File;
+  assert.equal(file.name, "field.png");
+  assert.equal(file.type, "image/png");
 });

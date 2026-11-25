@@ -18,6 +18,8 @@ export type Plot = {
   lon: number;
 };
 
+export type PlotPhoto = { plot_id: string; key: string; content_type: string };
+
 export type Crop = { id: string; name: string };
 export type Soil = { id: string; name: string; available_water_mm_per_m: number };
 export type Emitter = { id: string; name: string; flow_lph: number };

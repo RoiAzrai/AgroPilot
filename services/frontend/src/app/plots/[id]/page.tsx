@@ -5,13 +5,13 @@ import { DeletePlotButton } from "@/components/delete-plot-button";
 import { ErrorPanel } from "@/components/error-panel";
 import { PlanTable } from "@/components/plan-table";
 import { PlotHeader } from "@/components/plot-header";
-import { PlotPhotoCard } from "@/components/plot-photo-card";
+import { PhotoCard } from "@/components/photo-card";
+import { PhotoVersionProvider } from "@/components/photo-version";
 import { RecommendationHero } from "@/components/recommendation-hero";
 import { dateBounds, isRealIsoDate } from "@/lib/bucket";
 import { ApiError } from "@/lib/errors";
 import { getPlan } from "@/lib/planner";
 import { isInSeason } from "@/lib/recommendation";
-import { photoUrl } from "@/lib/photo";
 import { getFarm, getPlot, getPlotPhotoIds } from "@/lib/registry";
 
 export const dynamic = "force-dynamic";
@@ -91,18 +91,17 @@ export default async function PlotPage({
       loadFarmName(plot.farm_id),
       loadHasPhoto(plot.farm_id, plot.id),
     ]);
-    const photo = hasPhoto ? photoUrl(plot.id) : undefined;
     const plan = planResult.status === "fulfilled" ? planResult.value : null;
     const today = plan ? plan.days[0] : null;
     // One computation for both bounds. Null only when the plan failed (no days to read).
     const bounds = today ? dateBounds(today.date, plot.planting_date) : null;
     body = (
-      <>
+      <PhotoVersionProvider>
         <PlotHeader
           plot={plot}
           farmName={farmName}
           stage={today ? today.stage : null}
-          photoUrl={photo}
+          hasPhoto={hasPhoto}
         />
         {/* DOM order is the phone order (Today, Plan, Photo). From md the grid areas put
             Photo beside Today and Plan under both. */}
@@ -135,9 +134,10 @@ export default async function PlotPage({
               <PlanTable days={plan.days} className="min-w-0 md:[grid-area:plan]" />
             </>
           )}
-          <PlotPhotoCard
-            photoUrl={photo}
+          <PhotoCard
+            plotId={plot.id}
             plotName={plot.name}
+            hasPhoto={hasPhoto}
             className="md:[grid-area:photo]"
           />
         </div>
@@ -148,7 +148,7 @@ export default async function PlotPage({
             className="min-h-12 w-full rounded-xl text-[15px]"
           />
         </div>
-      </>
+      </PhotoVersionProvider>
     );
   }
 

@@ -3,9 +3,13 @@ import { test } from "node:test";
 import {
   computeEtag,
   ifNoneMatchMatches,
+  MAX_PHOTO_BYTES,
   photoErrorResponse,
+  photoFailureToResult,
   photoProxyResponse,
   photoUrl,
+  scaledSize,
+  validatePhotoFile,
 } from "./photo";
 
 const bytes = new Uint8Array([137, 80, 78, 71, 1, 2, 3]);
@@ -107,4 +111,85 @@ test("photoErrorResponse: plain text, no-store, nosniff", () => {
   assert.equal(r.headers["Content-Type"], "text/plain; charset=utf-8");
   assert.equal(r.headers["X-Content-Type-Options"], "nosniff");
   assert.equal(r.headers["Retry-After"], undefined);
+});
+
+test("validatePhotoFile: jpeg, png and webp up to 5 MB", () => {
+  for (const type of ["image/jpeg", "image/png", "image/webp"]) {
+    assert.deepEqual(validatePhotoFile({ type, size: 1 }), { ok: true });
+  }
+  assert.equal(MAX_PHOTO_BYTES, 5 * 1024 * 1024);
+  assert.deepEqual(validatePhotoFile({ type: "image/png", size: MAX_PHOTO_BYTES }), { ok: true });
+});
+
+test("validatePhotoFile: wrong type, empty, too big", () => {
+  for (const type of ["image/heic", "image/gif", "image/svg+xml", ""]) {
+    const r = validatePhotoFile({ type, size: 10 });
+    assert.equal(r.ok, false);
+    assert.match(!r.ok ? r.message : "", /JPEG, PNG or WebP/);
+  }
+  const empty = validatePhotoFile({ type: "image/jpeg", size: 0 });
+  assert.match(!empty.ok ? empty.message : "", /empty/);
+  const big = validatePhotoFile({ type: "image/jpeg", size: MAX_PHOTO_BYTES + 1 });
+  assert.match(!big.ok ? big.message : "", /5 MB/);
+});
+
+test("scaledSize: long side to 2048, aspect kept, never upscaled", () => {
+  assert.deepEqual(scaledSize(4000, 3000), { width: 2048, height: 1536 });
+  assert.deepEqual(scaledSize(3000, 4000), { width: 1536, height: 2048 });
+  assert.deepEqual(scaledSize(2048, 1000), { width: 2048, height: 1000 });
+  assert.deepEqual(scaledSize(800, 600), { width: 800, height: 600 });
+  assert.deepEqual(scaledSize(100000, 10), { width: 2048, height: 1 });
+  assert.deepEqual(scaledSize(1000, 500, 100), { width: 100, height: 50 });
+});
+
+const fail = (kind: "http" | "network" | "timeout", status?: number, detail = "x") => ({
+  kind,
+  status,
+  detail,
+});
+
+test("photoFailureToResult: 422 with and without a server detail", () => {
+  assert.deepEqual(photoFailureToResult(fail("http", 422, "Photo is larger than 5 MB")), {
+    ok: false,
+    kind: "validation",
+    message: "Use a JPEG, PNG or WebP photo up to 5 MB. (Photo is larger than 5 MB)",
+  });
+  for (const detail of ["422 Unprocessable Entity", ""]) {
+    const r = photoFailureToResult(fail("http", 422, detail));
+    assert.equal(!r.ok && r.message, "Use a JPEG, PNG or WebP photo up to 5 MB.");
+  }
+});
+
+test("photoFailureToResult: 503 and network errors", () => {
+  for (const f of [fail("http", 503), fail("network")]) {
+    assert.deepEqual(photoFailureToResult(f), {
+      ok: false,
+      kind: "unavailable",
+      message: "Photo storage unavailable. Nothing changed. Try again.",
+    });
+  }
+});
+
+test("photoFailureToResult: timeout", () => {
+  assert.deepEqual(photoFailureToResult(fail("timeout")), {
+    ok: false,
+    kind: "timeout",
+    message: "No answer in time. The photo may not have been saved. Try again.",
+  });
+});
+
+test("photoFailureToResult: 404 means the plot is gone", () => {
+  assert.deepEqual(photoFailureToResult(fail("http", 404)), {
+    ok: false,
+    kind: "rejected",
+    message: "This plot no longer exists.",
+    plotGone: true,
+  });
+});
+
+test("photoFailureToResult: anything else is generic, never the detail", () => {
+  for (const f of [fail("http", 500, "boto3 ClientError at s3://b/k"), fail("http", 400, "secret")]) {
+    const r = photoFailureToResult(f);
+    assert.equal(!r.ok && r.message, "The photo could not be saved. Try again.");
+  }
 });

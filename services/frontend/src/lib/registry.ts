@@ -2,11 +2,11 @@ import "server-only";
 import { config } from "./config";
 import { serviceFetch, serviceFetchBinary } from "./http";
 import type { PlotPayload } from "./schemas";
-import type { Crop, Emitter, Farm, Plot, Soil } from "./types";
+import type { Crop, Emitter, Farm, Plot, PlotPhoto, Soil } from "./types";
 
 function call<T>(
   path: string,
-  extra: { method?: "GET" | "POST" | "DELETE"; body?: unknown } = {},
+  extra: { method?: "GET" | "POST" | "DELETE"; body?: unknown; timeoutMs?: number } = {},
   query?: Record<string, string | number>,
 ) {
   return serviceFetch<T>({
@@ -14,7 +14,7 @@ function call<T>(
     service: "registry",
     baseUrl: config.registryUrl,
     path,
-    timeoutMs: config.registryTimeoutMs,
+    timeoutMs: extra.timeoutMs ?? config.registryTimeoutMs,
     query,
   });
 }
@@ -51,3 +51,14 @@ export const getPlotPhoto = (plotId: string) =>
     path: `/v1/plots/${encodeURIComponent(plotId)}/photo`,
     timeoutMs: config.photoTimeoutMs,
   });
+
+// Multipart field "file". Photo timeout: the registry retries S3 up to 3 times.
+export function uploadPlotPhoto(plotId: string, file: Blob) {
+  const form = new FormData();
+  form.append("file", file, file instanceof File && file.name ? file.name : "photo.jpg");
+  return call<PlotPhoto>(`/v1/plots/${encodeURIComponent(plotId)}/photo`, {
+    method: "POST",
+    body: form,
+    timeoutMs: config.photoTimeoutMs,
+  });
+}

@@ -1,8 +1,7 @@
 import Link from "next/link";
 import { ChevronLeft } from "lucide-react";
 import { DeletePlotButton } from "@/components/delete-plot-button";
-import { FieldIllustration } from "@/components/field-illustration";
-import { PhotoImage } from "@/components/photo-image";
+import { PlotThumbnail } from "@/components/plot-thumbnail";
 import { SeasonBadge } from "@/components/season-badge";
 import { describeSeason } from "@/lib/recommendation";
 import type { Plot } from "@/lib/types";
@@ -17,17 +16,17 @@ const EYEBROW = "text-[12px] font-semibold text-muted-foreground uppercase";
 // Desktop (md+) and phone (PhoneA) headers differ in layout, so each is its own block.
 // The hidden one is display:none, so it is also out of the accessibility tree.
 // `stage` is null when the plan is unavailable: no season pill or word then.
-// `photoUrl` (phone thumbnail) only when the registry lists a photo for this plot.
+// `hasPhoto` (phone thumbnail): the registry lists a photo for this plot.
 export function PlotHeader({
   plot,
   farmName,
   stage,
-  photoUrl,
+  hasPhoto,
 }: {
   plot: Plot;
   farmName: string | null;
   stage: string | null;
-  photoUrl?: string;
+  hasPhoto: boolean;
 }) {
   const crop = cropLabel(plot.crop_id);
   const area = `${plot.area_m2.toLocaleString("en-US")} m²`;
@@ -67,17 +66,7 @@ export function PlotHeader({
 
       <header className="flex items-center gap-3 md:hidden">
         <div className="size-16 flex-none overflow-hidden rounded-xl">
-          {photoUrl ? (
-            // Decorative: the photo card below shows the same photo with its alt text.
-            <PhotoImage
-              src={photoUrl}
-              alt=""
-              className="h-16"
-              fallback={<FieldIllustration height={64} />}
-            />
-          ) : (
-            <FieldIllustration height={64} />
-          )}
+          <PlotThumbnail plotId={plot.id} hasPhoto={hasPhoto} />
         </div>
         <div className="flex min-w-0 flex-col gap-0.5">
           <span className={`${EYEBROW} tracking-[0.8px]`}>{farmName ?? "Farm"}</span>
