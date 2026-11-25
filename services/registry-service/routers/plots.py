@@ -1,16 +1,26 @@
+import logging
 from collections.abc import Mapping
 from typing import Annotated, Any
 from uuid import UUID, uuid4
 
+import boto3
 import sqlalchemy.exc
-from fastapi import APIRouter, Depends, Response
+from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
+from fastapi import APIRouter, Depends, Request, Response, UploadFile
 from sqlalchemy import Connection, RowMapping, text
 
+from config import Settings
 from db import get_db, is_foreign_key_violation
-from errors import not_found, validation
-from models import Plot, PlotCreate, PlotUpdate, canonical_uuid, merge
+from errors import not_found, unavailable, validation
+from models import Plot, PlotCreate, PlotPhoto, PlotUpdate, canonical_uuid, merge
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/plots", tags=["plots"])
+
+MAX_PHOTO_BYTES = 5 * 1024 * 1024  # 5 MiB
+PHOTO_CONTENT_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
 
 Db = Annotated[Connection, Depends(get_db)]
 
@@ -126,3 +136,99 @@ def delete_plot(plot_id: str, conn: Db) -> Response:
     if _write(conn, "DELETE FROM plots WHERE id = :id", {"id": plot_id}) == 0:
         raise not_found("Plot not found")
     return Response(status_code=204)
+
+
+def _s3_client(settings: Settings):
+    """A new S3 client per request. No credentials are passed: boto3 finds them
+    (~/.aws locally, the instance's IAM role on EC2)."""
+    return boto3.client(
+        "s3",
+        region_name=settings.aws_region,
+        config=Config(
+            connect_timeout=settings.s3_connect_timeout_seconds,
+            read_timeout=settings.s3_read_timeout_seconds,
+            retries={"max_attempts": settings.s3_max_attempts, "mode": "standard"},
+        ),
+    )
+
+
+def _read_photo(file: UploadFile) -> bytes:
+    """The file's bytes, or 422 if it is empty, too big or not an allowed image type."""
+    if file.content_type not in PHOTO_CONTENT_TYPES:
+        raise validation("Photo must be image/jpeg, image/png or image/webp")
+    data = file.file.read(MAX_PHOTO_BYTES + 1)
+    if not data:
+        raise validation("Photo is empty")
+    if len(data) > MAX_PHOTO_BYTES:
+        raise validation("Photo is larger than 5 MB")
+    return data
+
+
+# Sync handlers on purpose: the database and boto3 calls block, so FastAPI runs them
+# in its threadpool instead of on the event loop.
+@router.post("/{plot_id}/photo", status_code=201, response_model=PlotPhoto)
+def upload_photo(plot_id: str, file: UploadFile, request: Request, conn: Db) -> PlotPhoto:
+    plot_id = _plot_id(plot_id)
+    plot = _get_plot(conn, plot_id)
+    data = _read_photo(file)
+    key = f"{plot['farm_id']}/{plot_id}/photo"
+    settings = request.app.state.settings
+    # End the read transaction: PostgreSQL would hold it open during the S3 call.
+    conn.rollback()
+    try:
+        _s3_client(settings).put_object(
+            Bucket=settings.aws_s3_bucket, Key=key, Body=data, ContentType=file.content_type
+        )
+    except (BotoCoreError, ClientError) as exc:
+        logger.warning("S3 upload failed for plot %s (key %s): %r", plot_id, key, exc)
+        raise unavailable("Photo storage unavailable") from exc
+    # Written only after S3 succeeded, so a failed upload leaves the stored key unchanged.
+    try:
+        conn.execute(
+            text(
+                "INSERT INTO plot_photos (plot_id, key, content_type)"
+                " VALUES (:plot_id, :key, :content_type)"
+                " ON CONFLICT (plot_id) DO UPDATE"
+                " SET key = excluded.key, content_type = excluded.content_type"
+            ),
+            {"plot_id": plot_id, "key": key, "content_type": file.content_type},
+        )
+        conn.commit()
+    except sqlalchemy.exc.IntegrityError as exc:
+        # The plot was deleted during the upload.
+        if not is_foreign_key_violation(exc.orig):
+            raise
+        raise not_found("Plot not found") from exc
+    return PlotPhoto(plot_id=plot_id, key=key, content_type=file.content_type)
+
+
+@router.get(
+    "/{plot_id}/photo",
+    response_class=Response,
+    responses={200: {"content": {content_type: {} for content_type in sorted(PHOTO_CONTENT_TYPES)}}},
+)
+def get_photo(plot_id: str, request: Request, conn: Db) -> Response:
+    plot_id = _plot_id(plot_id)
+    _get_plot(conn, plot_id)
+    photo = conn.execute(
+        text("SELECT key, content_type FROM plot_photos WHERE plot_id = :plot_id"),
+        {"plot_id": plot_id},
+    ).mappings().fetchone()
+    if photo is None:
+        raise not_found("Plot has no photo")
+    settings = request.app.state.settings
+    conn.rollback()  # end the read transaction before the S3 call
+    try:
+        obj = _s3_client(settings).get_object(Bucket=settings.aws_s3_bucket, Key=photo["key"])
+        data = obj["Body"].read()
+    except (BotoCoreError, ClientError) as exc:
+        # A missing object is also here: without s3:ListBucket, S3 answers 403, not 404.
+        logger.warning(
+            "S3 download failed for plot %s (key %s): %r", plot_id, photo["key"], exc
+        )
+        raise unavailable("Photo storage unavailable") from exc
+    return Response(
+        content=data,
+        media_type=photo["content_type"],
+        headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"},
+    )

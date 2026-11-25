@@ -738,3 +738,48 @@ and why.
 - **Why:** a future date is invalid input for any plot; the other checks
   depend on the plot, so they run after it is fetched, and "no suggestion
   because the season ended" is the true answer (I18).
+
+## 50. registry-service: plot photos in S3, decisions and known limits
+- **Decided (2026-11-25):** key and content type in a separate `plot_photos`
+  table (`plot_id` primary key, foreign key to `plots` with `ON DELETE
+  CASCADE`), not in the plot JSON and not as new `plots` columns. The
+  registry creates it at startup with `checkfirst` (idempotent). It is not in
+  `TABLES` and not in `seed_registry.sh`, so the seed schema and its
+  comparison test stay as given. `seed_db.py --reset` drops it before `plots`.
+- **Why:** there is no migration tool, and the production database has real
+  data. Creating one missing table is additive: older code ignores it, so a
+  rollback still works. New `plots` columns would need an `ALTER TABLE`, change
+  the given schema and break the schema comparison. If the database is
+  unavailable at startup, the service logs it and starts as before (503s); the
+  table is created on the next start.
+- **Orphans:** deleting a plot deletes its row (CASCADE, so the delete returns
+  `204`, not the foreign key `422`). The S3 object stays: the server's IAM
+  policy allows only `s3:PutObject` and `s3:GetObject`, no delete.
+- **Object missing in S3:** without `s3:ListBucket`, S3 answers `403
+  AccessDenied`, not `404`. It returns `503 UNAVAILABLE` and is logged, like any
+  other S3 error: the database says a photo exists, so this is an operations
+  problem, not "no photo".
+- **S3 timeouts:** `S3_CONNECT_TIMEOUT_SECONDS=3`, `S3_READ_TIMEOUT_SECONDS=10`,
+  `S3_MAX_ATTEMPTS=3` (standard retry mode), optional keys with defaults.
+  botocore's defaults (60 s, legacy retries) would hold a request for minutes.
+- **503 from S3 carries `Retry-After: 5`,** like the database's 503.
+- **GET sends `X-Content-Type-Options: nosniff` and `Cache-Control: no-store`.**
+  `no-store` lets a re-upload show at once; `nosniff` stops a browser from
+  guessing another type for the bytes.
+- **Order of checks:** plot id (404), then the file (422), then S3 (503), then
+  the database write. The row is written only after S3 succeeded, so a failed
+  upload leaves the stored key unchanged. The read transaction is ended before
+  the S3 call, so PostgreSQL is not left idle in a transaction while S3 is slow.
+- **Known limits:**
+  - Moving a plot to another farm (`PATCH farm_id`) keeps the stored key: GET
+    still works. The next upload writes a new key and leaves the old object.
+  - The content type is the one the client declared. The bytes are not checked
+    (no magic-byte sniffing); `nosniff` limits the harm.
+  - Two uploads to the same plot at the same time: the last S3 write and the
+    last database write may come from different uploads, so the stored content
+    type can disagree with the object. Rare; accepted.
+  - The 5 MiB check runs in the handler. Starlette has already received the
+    whole request body by then.
+  - Deploy: an older registry refuses the new `.env` keys, so a rollback to a
+    commit from before this feature needs the `AWS_*` lines removed first
+    (deploy/README.md).

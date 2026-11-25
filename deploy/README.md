@@ -8,8 +8,9 @@ its log back to the job. If the SSH session drops, the deploy still finishes.
 ## What `deploy.sh <sha>` does
 
 1. Takes a lock, so only one deploy runs at a time.
-2. Preflight: required commands, `uv`, the `.env` files, passwordless sudo, the
-   four systemd units, PostgreSQL running, at least 1500 MB free disk.
+2. Preflight: required commands, `uv`, the `.env` files (and `AWS_S3_BUCKET` /
+   `AWS_REGION` in the registry's `.env`), passwordless sudo, the four systemd
+   units, PostgreSQL running, at least 1500 MB free disk.
 3. Fetches `origin/main` and checks the commit exists and is on `main`.
 4. Checks out the commit, runs `uv sync --locked` for the three Python services,
    and runs `npm ci` / `npm run build` for the frontend only when its lock file
@@ -56,6 +57,32 @@ problem (each one is printed).
   Server-side variables in `.env.local` are read at runtime and the frontend is
   restarted on every deploy, so they take effect. If a `NEXT_PUBLIC_*` variable is
   ever added, delete `services/frontend/.next/.agropilot-tree` on the server to force a rebuild.
+
+## Plot photos (S3)
+
+registry-service stores plot photos in S3. On the server it needs:
+
+- `AWS_S3_BUCKET` and `AWS_REGION` in `services/registry-service/.env`. Both are
+  required: without them the registry does not start, and preflight refuses the
+  deploy before anything changes. `S3_CONNECT_TIMEOUT_SECONDS`,
+  `S3_READ_TIMEOUT_SECONDS` and `S3_MAX_ATTEMPTS` are optional (see `.env.example`).
+- No credentials in any file: boto3 takes them from the IAM role attached to the
+  instance (`s3:PutObject` and `s3:GetObject` on the bucket). Don't put
+  `AWS_ACCESS_KEY_ID` in a `.env`, a systemd unit or `~/.aws` on the server: they
+  would win over the role.
+- The `plot_photos` table is created by the registry at startup (idempotent). The
+  database role must be allowed to create tables (the role that owns the
+  registry tables is).
+
+**Order for the first deploy with photos:** add the two keys to the server's
+`.env` right before merging. The running (old) registry keeps working, because
+it reads `.env` only at startup. Don't restart it by hand in between: the old
+code refuses unknown keys in `.env`.
+
+**Rollback past the photos commit:** an older registry refuses the two keys and
+does not start, so an automatic rollback to a commit from before the feature
+fails (exit code 2). Remove the `AWS_*` lines from the registry's `.env`, then
+restart. The `plot_photos` table can stay: older code ignores it.
 
 ## Known limits
 

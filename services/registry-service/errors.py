@@ -31,11 +31,14 @@ _UNIQUE_DETAILS = {
 
 
 class AppError(Exception):
-    def __init__(self, status: int, code: str, detail: str) -> None:
+    def __init__(
+        self, status: int, code: str, detail: str, headers: dict[str, str] | None = None
+    ) -> None:
         super().__init__(detail)
         self.status = status
         self.code = code
         self.detail = detail
+        self.headers = headers
 
 
 def not_found(detail: str) -> AppError:
@@ -48,6 +51,10 @@ def conflict(detail: str) -> AppError:
 
 def validation(detail: str) -> AppError:
     return AppError(422, "VALIDATION", detail)
+
+
+def unavailable(detail: str) -> AppError:
+    return AppError(503, "UNAVAILABLE", detail, headers={"Retry-After": str(RETRY_AFTER_SECONDS)})
 
 
 def problem(
@@ -64,7 +71,7 @@ def problem(
 
 
 async def _app_error(request: Request, exc: AppError) -> JSONResponse:
-    return problem(exc.status, exc.code, exc.detail)
+    return problem(exc.status, exc.code, exc.detail, headers=exc.headers)
 
 
 async def _request_validation_error(

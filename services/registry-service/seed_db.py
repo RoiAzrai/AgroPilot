@@ -34,6 +34,10 @@ from config import get_settings
 
 TABLES: tuple[str, ...] = ("crops", "soils", "emitters", "farms", "plots")
 
+# Not in TABLES: it is not part of the seed schema in seed_registry.sh and has no seed
+# rows. The service creates it at startup (db.create_photo_table).
+PHOTO_TABLE = "plot_photos"
+
 SEED_ROWS: dict[str, list[dict[str, Any]]] = {
     "crops": [
         {"id": "tomato", "name": "Tomato"},
@@ -137,6 +141,14 @@ def build_metadata(dialect_name: str) -> MetaData:
         Column("lon", real, nullable=False),
         UniqueConstraint("farm_id", "name", name="plots_farm_id_name_key"),
     )
+    # The photo's S3 key and content type. Deleting a plot deletes its row; the S3
+    # object stays (the server's IAM policy has no s3:DeleteObject).
+    table(
+        PHOTO_TABLE,
+        Column("plot_id", Text, ForeignKey("plots.id", ondelete="CASCADE"), primary_key=True),
+        text("key"),
+        text("content_type"),
+    )
     return metadata
 
 
@@ -147,9 +159,11 @@ def create_and_seed(engine: Engine, *, reset: bool) -> None:
         raise TablesExistError(f"Tables already exist: {', '.join(existing)}")
     metadata = build_metadata(engine.dialect.name)
     with engine.begin() as conn:
-        for name in reversed(TABLES):
-            if name in existing:
-                conn.exec_driver_sql(f"DROP TABLE {name}")
+        if reset:
+            # plot_photos first: it references plots, so PostgreSQL refuses to drop plots before it.
+            for name in (PHOTO_TABLE, *reversed(TABLES)):
+                if name in names:
+                    conn.exec_driver_sql(f"DROP TABLE {name}")
         metadata.create_all(conn)
         for name in TABLES:
             conn.execute(metadata.tables[name].insert(), SEED_ROWS[name])

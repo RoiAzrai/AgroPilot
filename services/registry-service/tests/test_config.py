@@ -61,3 +61,41 @@ def test_missing_database_url_is_a_clear_error(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "ENV_FILE", tmp_path / "none.env")
     with pytest.raises(RuntimeError, match="^DATABASE_URL is required"):
         config.get_settings()
+
+
+@pytest.mark.parametrize("key", ["AWS_S3_BUCKET", "AWS_REGION"])
+def test_aws_settings_are_required(monkeypatch, tmp_path, key):
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///file:x.db?mode=rw&uri=true")
+    monkeypatch.setattr(config, "ENV_FILE", tmp_path / "none.env")
+    monkeypatch.delenv(key)
+    with pytest.raises(ValidationError) as exc:
+        config.get_settings()
+    [error] = exc.value.errors()
+    assert error["loc"] == (key.lower(),)
+    assert error["type"] == "missing"
+
+
+def test_s3_settings_have_defaults(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///file:x.db?mode=rw&uri=true")
+    monkeypatch.setattr(config, "ENV_FILE", tmp_path / "none.env")
+    settings = config.get_settings()
+    assert settings.aws_s3_bucket == "test-bucket"
+    assert settings.aws_region == "us-east-1"
+    assert settings.s3_connect_timeout_seconds == 3
+    assert settings.s3_read_timeout_seconds == 10
+    assert settings.s3_max_attempts == 3
+
+
+@pytest.mark.parametrize(
+    "key", ["S3_CONNECT_TIMEOUT_SECONDS", "S3_READ_TIMEOUT_SECONDS", "S3_MAX_ATTEMPTS"]
+)
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_s3_settings_must_be_above_zero(monkeypatch, tmp_path, key, value):
+    monkeypatch.setenv("DATABASE_URL", "sqlite:///file:x.db?mode=rw&uri=true")
+    monkeypatch.setattr(config, "ENV_FILE", tmp_path / "none.env")
+    monkeypatch.setenv(key, value)
+    with pytest.raises(ValidationError) as exc:
+        config.get_settings()
+    [error] = exc.value.errors()
+    assert error["loc"] == (key.lower(),)
+    assert error["type"] == "greater_than"
