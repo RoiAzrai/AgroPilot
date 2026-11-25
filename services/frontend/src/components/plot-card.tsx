@@ -1,6 +1,6 @@
 import { Suspense } from "react";
 import Link from "next/link";
-import { ChevronRight } from "lucide-react";
+import { PlotCardImage } from "@/components/plot-card-image";
 import {
   SeasonBadge,
   SeasonBadgeSkeleton,
@@ -16,31 +16,24 @@ export function PlotCard({ plot }: { plot: Plot }) {
   return (
     <Link
       href={`/plots/${plot.id}`}
-      className="group flex items-start justify-between gap-3 rounded-xl bg-card p-4 ring-1 ring-foreground/15 transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+      className="flex max-w-[340px] flex-[1_1_260px] flex-col overflow-hidden rounded-[14px] border border-border bg-surface text-foreground no-underline transition-shadow hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card"
     >
-      <div className="min-w-0">
-        <h3 className="truncate text-lg font-semibold leading-snug">
-          {plot.name}
-        </h3>
-        <p className="text-sm font-medium text-primary">
-          {cropLabel(plot.crop_id)}
-        </p>
-        <div className="mt-2 flex h-6 items-center">
+      <PlotCardImage />
+      <div className="flex flex-col gap-2.5 px-[18px] pt-3.5 pb-4">
+        <h3 className="text-[18px] font-semibold">{plot.name}</h3>
+        <div className="flex min-h-[22px] flex-wrap items-center gap-2">
+          <span className="text-[15px] text-muted-foreground">
+            {cropLabel(plot.crop_id)}
+          </span>
           <Suspense fallback={<SeasonBadgeSkeleton />}>
             <SeasonBadge plotId={plot.id} />
           </Suspense>
         </div>
-        <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-sm">
-          <dt className="text-muted-foreground">Area</dt>
-          <dd>{plot.area_m2.toLocaleString("en-US")} m²</dd>
-          <dt className="text-muted-foreground">Planted</dt>
-          <dd>{plot.planting_date}</dd>
-        </dl>
+        <div className="flex gap-4 border-t border-line pt-2.5 text-[14px] text-muted-foreground">
+          <span>{plot.area_m2.toLocaleString("en-US")} m²</span>
+          <span>Planted {plot.planting_date}</span>
+        </div>
       </div>
-      <ChevronRight
-        aria-hidden
-        className="mt-1 size-5 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5"
-      />
     </Link>
   );
 }

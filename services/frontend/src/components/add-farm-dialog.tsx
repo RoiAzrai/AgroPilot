@@ -90,9 +90,12 @@ export function AddFarmDialog() {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger
-        render={<Button variant="outline" className="h-11 min-h-11 px-4" />}
+        render={
+          <Button className="h-auto min-h-11 gap-2 rounded-[10px] px-5 py-3 text-[15px] leading-[normal] font-semibold hover:bg-primary/90" />
+        }
       >
-        + Farm
+        <svg aria-hidden width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="size-[16px]"><path d="M8 3v10M3 8h10" /></svg>
+        Add farm
       </DialogTrigger>
       <DialogContent>
         <DialogHeader>

@@ -264,12 +264,10 @@ function PlotForm({
 export function AddPlotDialog({
   farm,
   catalogs,
-  primary = false,
 }: {
   farm: Farm;
   // null when any catalogue failed to load
   catalogs: Catalogs | null;
-  primary?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -277,12 +275,13 @@ export function AddPlotDialog({
       <DialogTrigger
         render={
           <Button
-            variant={primary ? "default" : "outline"}
-            className="h-11 min-h-11 px-4"
+            variant="outline"
+            className="h-auto min-h-11 gap-1.5 rounded-[10px] border-[1.5px] border-primary bg-transparent px-4 py-2.5 text-[14px] leading-[normal] font-semibold text-primary hover:bg-primary/5 hover:text-primary aria-expanded:bg-primary/5 aria-expanded:text-primary"
           />
         }
       >
-        + Plot
+        <svg aria-hidden width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="size-[14px]"><path d="M8 3v10M3 8h10" /></svg>
+        Add plot
       </DialogTrigger>
       <DialogContent
         className={cn(
