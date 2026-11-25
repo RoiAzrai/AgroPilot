@@ -2,14 +2,20 @@ import { Suspense } from "react";
 import { AddFarmDialog } from "@/components/add-farm-dialog";
 import { ErrorPanel } from "@/components/error-panel";
 import { FarmSection } from "@/components/farm-section";
-import { StatusLine } from "@/components/status-line";
 import { ApiError } from "@/lib/errors";
-import { listCrops, listEmitters, listFarms, listPlots, listSoils } from "@/lib/registry";
+import {
+  getPlotPhotoIds,
+  listCrops,
+  listEmitters,
+  listFarms,
+  listPlots,
+  listSoils,
+} from "@/lib/registry";
 import type { Catalogs, Farm, Plot } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
-type FarmPlots = { farm: Farm; plots: Plot[]; error?: ApiError };
+type FarmPlots = { farm: Farm; plots: Plot[]; error?: ApiError; photoIds: ReadonlySet<string> };
 
 type Loaded =
   | { ok: true; farms: FarmPlots[] }
@@ -23,15 +29,23 @@ async function load(): Promise<Loaded> {
     if (e instanceof ApiError) return { ok: false, error: e, what: "farms" };
     throw e;
   }
-  // One farm's plots failing must not hide the other farms.
-  const results = await Promise.allSettled(farms.map((f) => listPlots(f.id)));
+  // One farm's plots failing must not hide the other farms. Photo lists load in
+  // parallel; a failed one only means "no photos" for that farm.
+  const [results, photoResults] = await Promise.all([
+    Promise.allSettled(farms.map((f) => listPlots(f.id))),
+    Promise.allSettled(farms.map((f) => getPlotPhotoIds(f.id))),
+  ]);
   return {
     ok: true,
     farms: farms.map((farm, i) => {
       const result = results[i];
-      if (result.status === "fulfilled") return { farm, plots: result.value };
+      const photos = photoResults[i];
+      const photoIds = new Set(
+        photos.status === "fulfilled" && Array.isArray(photos.value) ? photos.value : [],
+      );
+      if (result.status === "fulfilled") return { farm, plots: result.value, photoIds };
       if (result.reason instanceof ApiError) {
-        return { farm, plots: [], error: result.reason };
+        return { farm, plots: [], error: result.reason, photoIds };
       }
       throw result.reason;
     }),
@@ -65,30 +79,26 @@ async function Farms() {
   if (data.farms.length === 0) {
     return <p className="text-muted-foreground">No farms yet.</p>;
   }
-  return data.farms.map(({ farm, plots, error }) => (
+  return data.farms.map(({ farm, plots, error, photoIds }) => (
     <FarmSection
       key={farm.id}
       farm={farm}
       plots={plots}
       error={error}
       catalogs={catalogs}
+      photoIds={photoIds}
     />
   ));
 }
 
 export default function Home() {
   return (
-    <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-8 px-4 py-10 sm:py-14">
-      <header className="flex flex-col gap-3">
-        <div className="flex items-start justify-between gap-3">
-          <h1 className="text-5xl font-extrabold tracking-tight sm:text-6xl">
-            AgroPilot
-          </h1>
-          <AddFarmDialog />
-        </div>
-        <p className="max-w-prose text-lg text-muted-foreground">
-          When to water each plot, and for how long.
-        </p>
+    <main className="mx-auto flex w-full max-w-[1120px] flex-1 flex-col gap-7 px-4 pt-10 pb-16 leading-[normal] sm:px-6">
+      <header className="flex flex-wrap items-end justify-between gap-4">
+        <h1 className="font-heading text-[48px] leading-[1.05] font-bold text-primary">
+          AgroPilot
+        </h1>
+        <AddFarmDialog />
       </header>
 
       <Suspense
@@ -96,16 +106,6 @@ export default function Home() {
       >
         <Farms />
       </Suspense>
-
-      <footer className="mt-4">
-        <Suspense
-          fallback={
-            <p className="text-sm text-muted-foreground">Checking services…</p>
-          }
-        >
-          <StatusLine />
-        </Suspense>
-      </footer>
     </main>
   );
 }

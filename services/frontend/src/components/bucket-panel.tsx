@@ -22,8 +22,13 @@ type Problem = { message: string; plotGone?: boolean };
 // The answer belongs to the date it was asked for. If the date changes, it is dropped.
 type Answer = { date: string; view: SuggestionView };
 
-const linkButton =
-  "inline-flex min-h-11 items-center rounded-md px-1 font-medium text-primary underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+// Text buttons in the bucket row: underlined, 44px tall on desktop, 48px on phone.
+const textButton =
+  "inline-flex min-h-12 items-center rounded-md px-1.5 text-[14px] font-semibold text-primary underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:min-h-11";
+
+// Phone: a bordered 48px button (PhoneA). Desktop: a text button like Reset (Plot design).
+const changeButton =
+  "ml-auto inline-flex min-h-12 items-center rounded-[10px] border border-border bg-background px-4 text-[15px] font-semibold text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:ml-0 md:min-h-11 md:rounded-md md:border-0 md:bg-transparent md:px-1.5 md:text-[14px] md:underline md:underline-offset-4";
 
 // Controlled inputs and useTransition with a manual onSubmit, not <form action>:
 // React 19 resets a form after an action.
@@ -114,43 +119,44 @@ export function BucketPanel({
   }
 
   return (
-    <section aria-label="Assumed bucket level" className="flex flex-col gap-2">
-      <p className="flex flex-wrap items-center gap-x-2 text-sm text-muted-foreground">
+    <section
+      aria-label="Assumed bucket level"
+      className="mt-auto flex flex-col gap-3 border-t border-line pt-1.5 md:pt-3.5"
+    >
+      <div className="flex flex-wrap items-center gap-2 text-[14px] text-muted-foreground md:gap-2.5">
         <span>
-          {full
-            ? "Assumed bucket: 100% (full)"
-            : `Assumed bucket: ${formatBucketPercent(bucketStart)}`}
+          <span className="md:hidden">Bucket: </span>
+          <span className="hidden md:inline">Assumed bucket: </span>
+          <strong className="font-semibold text-foreground">
+            {full ? "100% (full)" : formatBucketPercent(bucketStart)}
+          </strong>
           {!full && irrigated !== null && (
             <>
               {"\u00a0· from irrigation on "}
               <span className="whitespace-nowrap">{irrigated}</span>
             </>
           )}
-          <span aria-hidden>{"\u00a0·"}</span>
         </span>
-        <span className="whitespace-nowrap">
-          <button
-            type="button"
-            className={linkButton}
-            aria-expanded={open}
-            aria-controls={panelId}
-            onClick={() => setOpen((o) => !o)}
-          >
-            {open ? "Close" : "Change"}
-          </button>
-          {!full && <span aria-hidden>{"\u00a0·"}</span>}
-        </span>
+        <button
+          type="button"
+          className={changeButton}
+          aria-expanded={open}
+          aria-controls={panelId}
+          onClick={() => setOpen((o) => !o)}
+        >
+          {open ? "Close" : "Change"}
+        </button>
         {!full && (
-          <Link href={pathname} replace scroll={false} className={linkButton}>
+          <Link href={pathname} replace scroll={false} className={textButton}>
             Reset
           </Link>
         )}
-      </p>
+      </div>
 
       {open && (
         <div
           id={panelId}
-          className="flex flex-col gap-3 rounded-2xl bg-card p-4 ring-1 ring-foreground/15"
+          className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4"
         >
           <form onSubmit={onSuggest} className="flex flex-col gap-2" noValidate>
             <Label htmlFor={dateId}>When did you last irrigate?</Label>
@@ -182,7 +188,7 @@ export function BucketPanel({
                   <>
                     {" "}
                     <Link href="/" className="font-medium underline underline-offset-4">
-                      All plots
+                      All farms
                     </Link>
                   </>
                 )}

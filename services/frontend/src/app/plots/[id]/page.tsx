@@ -1,17 +1,18 @@
-import { Suspense } from "react";
 import { notFound } from "next/navigation";
 import { z } from "zod";
+import { BucketPanel } from "@/components/bucket-panel";
+import { DeletePlotButton } from "@/components/delete-plot-button";
 import { ErrorPanel } from "@/components/error-panel";
 import { PlanTable } from "@/components/plan-table";
 import { PlotHeader } from "@/components/plot-header";
-import { BucketPanel } from "@/components/bucket-panel";
+import { PhotoCard } from "@/components/photo-card";
+import { PhotoVersionProvider } from "@/components/photo-version";
 import { RecommendationHero } from "@/components/recommendation-hero";
-import { StatusLine } from "@/components/status-line";
 import { dateBounds, isRealIsoDate } from "@/lib/bucket";
 import { ApiError } from "@/lib/errors";
 import { getPlan } from "@/lib/planner";
 import { isInSeason } from "@/lib/recommendation";
-import { getPlot } from "@/lib/registry";
+import { getFarm, getPlot, getPlotPhotoIds } from "@/lib/registry";
 
 export const dynamic = "force-dynamic";
 
@@ -44,6 +45,27 @@ function failure(result: PromiseSettledResult<unknown>): ApiError | null {
   return result.reason;
 }
 
+// The farm name only labels the header. Any registry failure (404 included) means
+// "no name", never a broken page; failure() is not used because it 404s the page.
+async function loadFarmName(farmId: string): Promise<string | null> {
+  try {
+    return (await getFarm(farmId)).name;
+  } catch (e) {
+    if (e instanceof ApiError) return null;
+    throw e;
+  }
+}
+
+// A failed photo list only means "no photo": the card shows the illustration.
+async function loadHasPhoto(farmId: string, plotId: string): Promise<boolean> {
+  try {
+    const ids = await getPlotPhotoIds(farmId);
+    return Array.isArray(ids) && ids.includes(plotId);
+  } catch {
+    return false;
+  }
+}
+
 export default async function PlotPage({
   params,
   searchParams,
@@ -65,54 +87,74 @@ export default async function PlotPage({
     body = <ErrorPanel error={plotError!} what="plot" detailed />;
   } else {
     const plot = plotResult.value;
+    const [farmName, hasPhoto] = await Promise.all([
+      loadFarmName(plot.farm_id),
+      loadHasPhoto(plot.farm_id, plot.id),
+    ]);
+    const plan = planResult.status === "fulfilled" ? planResult.value : null;
+    const today = plan ? plan.days[0] : null;
     // One computation for both bounds. Null only when the plan failed (no days to read).
-    const bounds =
-      planResult.status === "fulfilled"
-        ? dateBounds(planResult.value.days[0].date, plot.planting_date)
-        : null;
+    const bounds = today ? dateBounds(today.date, plot.planting_date) : null;
     body = (
-      <>
-        <PlotHeader plot={plot} />
-        {planResult.status === "rejected" ? (
-          <ErrorPanel error={planError!} what="plan" detailed />
-        ) : (
-          <>
-            <RecommendationHero
-              today={planResult.value.days[0]}
-              plot={plot}
-              fetchedAt={planResult.value.fetched_at}
-              planStale={planResult.value.stale}
-            />
-            {bounds && isInSeason(planResult.value.days[0]) && (
-              <BucketPanel
-                plotId={id}
-                bucketStart={bucketStart}
-                irrigated={irrigated}
-                today={planResult.value.days[0].date}
-                plantingDate={plot.planting_date}
-                minDate={bounds.min}
-                maxDate={bounds.max}
-              />
-            )}
-            <PlanTable days={planResult.value.days} />
-          </>
-        )}
-      </>
+      <PhotoVersionProvider>
+        <PlotHeader
+          plot={plot}
+          farmName={farmName}
+          stage={today ? today.stage : null}
+          hasPhoto={hasPhoto}
+        />
+        {/* DOM order is the phone order (Today, Plan, Photo). From md the grid areas put
+            Photo beside Today and Plan under both. */}
+        <div className="grid grid-cols-1 gap-3.5 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] md:gap-6 md:[grid-template-areas:'today_photo'_'plan_plan']">
+          {!plan || !today ? (
+            <div className="md:[grid-area:today]">
+              <ErrorPanel error={planError!} what="plan" detailed />
+            </div>
+          ) : (
+            <>
+              <RecommendationHero
+                today={today}
+                plot={plot}
+                fetchedAt={plan.fetched_at}
+                planStale={plan.stale}
+                className="md:[grid-area:today]"
+              >
+                {bounds && isInSeason(today) && (
+                  <BucketPanel
+                    plotId={id}
+                    bucketStart={bucketStart}
+                    irrigated={irrigated}
+                    today={today.date}
+                    plantingDate={plot.planting_date}
+                    minDate={bounds.min}
+                    maxDate={bounds.max}
+                  />
+                )}
+              </RecommendationHero>
+              <PlanTable days={plan.days} className="min-w-0 md:[grid-area:plan]" />
+            </>
+          )}
+          <PhotoCard
+            plotId={plot.id}
+            plotName={plot.name}
+            hasPhoto={hasPhoto}
+            className="md:[grid-area:photo]"
+          />
+        </div>
+        <div className="md:hidden">
+          <DeletePlotButton
+            plotId={plot.id}
+            plotName={plot.name}
+            className="min-h-12 w-full rounded-xl text-[15px]"
+          />
+        </div>
+      </PhotoVersionProvider>
     );
   }
 
   return (
-    <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-5 px-4 py-5 sm:gap-8 sm:py-10">
+    <main className="mx-auto flex w-full max-w-[1120px] flex-1 flex-col gap-3.5 px-4 pt-2 pb-6 leading-[normal] md:gap-6 md:px-6 md:pt-6 md:pb-16">
       {body}
-      <footer className="mt-4">
-        <Suspense
-          fallback={
-            <p className="text-sm text-muted-foreground">Checking services…</p>
-          }
-        >
-          <StatusLine />
-        </Suspense>
-      </footer>
     </main>
   );
 }

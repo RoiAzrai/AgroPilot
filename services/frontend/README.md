@@ -23,6 +23,7 @@ cp .env.example .env.local
 | `REGISTRY_TIMEOUT_MS` | Timeout in milliseconds for each call to registry-service. |
 | `PLANNER_TIMEOUT_MS` | Timeout in milliseconds for each call to planner-service. |
 | `HEALTH_TIMEOUT_MS` | Timeout in milliseconds for each service health check. |
+| `PHOTO_TIMEOUT_MS` | Timeout in milliseconds for plot photo calls to registry-service (download and upload). Keep it long (45000): the registry retries S3 up to 3 times. |
 
 The app reads these with zod in `src/lib/config.ts`. If a value is missing or invalid, the app stops with an error that names the variable.
 

@@ -11,6 +11,7 @@ const schema = z.object({
   REGISTRY_TIMEOUT_MS: ms,
   PLANNER_TIMEOUT_MS: ms,
   HEALTH_TIMEOUT_MS: ms,
+  PHOTO_TIMEOUT_MS: ms,
 });
 
 const parsed = schema.safeParse(process.env);
@@ -31,4 +32,5 @@ export const config = {
   registryTimeoutMs: env.REGISTRY_TIMEOUT_MS,
   plannerTimeoutMs: env.PLANNER_TIMEOUT_MS,
   healthTimeoutMs: env.HEALTH_TIMEOUT_MS,
+  photoTimeoutMs: env.PHOTO_TIMEOUT_MS,
 } as const;

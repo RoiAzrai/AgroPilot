@@ -5,13 +5,20 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-  --color-status-up: var(--status-up);
-  --color-status-down: var(--status-down);
+  --color-card-band: var(--card-band);
+  --color-surface: var(--surface);
+  --color-line: var(--line);
+  --color-service-bar: var(--service-bar);
+  --color-service-bar-foreground: var(--service-bar-foreground);
+  --color-badge-growing: var(--badge-growing);
+  --color-badge-ended: var(--badge-ended);
+  --color-dot-up: var(--dot-up);
+  --color-dot-down: var(--dot-down);
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-bricolage);
+  --font-sans: var(--font-inter);
   --font-mono: var(--font-geist-mono);
-  --font-heading: var(--font-sans);
+  --font-heading: var(--font-fraunces);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -51,27 +58,35 @@
 }
 
 :root {
-  /* AgroPilot: mineral ground, conifer ink, water accent */
-  --background: #e9ece1;
-  --foreground: #16261c;
-  --card: #f3f5ec;
-  --card-foreground: #16261c;
-  --popover: #f3f5ec;
-  --popover-foreground: #16261c;
-  --primary: #0b5d6b;
-  --primary-foreground: #f3f5ec;
-  --secondary: #dbe0cf;
-  --secondary-foreground: #16261c;
-  --muted: #dbe0cf;
-  --muted-foreground: #46554a;
-  --accent: #dbe0cf;
-  --accent-foreground: #16261c;
-  --destructive: #9e2b1b;
-  --border: #b9c2ab;
-  --input: #b9c2ab;
-  --ring: #0b5d6b;
-  --status-up: #2d6a34;
-  --status-down: #9e2b1b;
+  /* AgroPilot: warm field paper, deep leaf green (docs/design/plot-photo-ui) */
+  --background: #F3EBDD;
+  --foreground: #3B2A1C;
+  --card: #FBF6EC;
+  --card-foreground: #3B2A1C;
+  --card-band: #E8DAC0;
+  --surface: #FFFFFF;
+  --popover: #FBF6EC;
+  --popover-foreground: #3B2A1C;
+  --primary: #2F4A32;
+  --primary-foreground: #FBF6EC;
+  --secondary: #EDE3D1;
+  --secondary-foreground: #3B2A1C;
+  --muted: #EDE3D1;
+  --muted-foreground: #6B4F35;
+  --accent: #E8DAC0;
+  --accent-foreground: #3B2A1C;
+  --destructive: #8A3B2E;
+  --border: #D9C7A8;
+  --input: #D9C7A8;
+  --ring: #2F4A32;
+  --line: #EFE4D2;
+  --service-bar: #3D5C40;
+  --service-bar-foreground: #CFE0C3;
+  --badge-growing: #DCE8D2;
+  --badge-ended: #EDE3D1;
+  /* Status dots only: never use as text on a light background. */
+  --dot-up: #6FCF7F;
+  --dot-down: #E5484D;
   --chart-1: #0b5d6b;
   --chart-2: #2d6a34;
   --chart-3: #6b7a3a;

@@ -62,20 +62,20 @@ export function describeToday(day: DayOut, plot?: Plot): Recommendation {
       return {
         kind: "ended",
         headline: "Season ended",
-        detail: "No more irrigation for this crop.",
+        detail: "This plot has finished its growing season.",
       };
     default:
       if (day.run_minutes > 0) {
         return {
           kind: "water",
           headline: `Water for ${formatMinutes(day.run_minutes)}`,
-          detail: `About ${day.litres.toLocaleString("en-US")} litres, in total for this plot.`,
+          detail: `About ${day.litres.toLocaleString("en-US")} litres`,
         };
       }
       return {
         kind: "skip",
         headline: "No irrigation today",
-        detail: "The soil still holds enough water.",
+        detail: "The soil has enough water for today.",
       };
   }
 }
@@ -86,6 +86,17 @@ export function formatFetchedAt(value: string): string {
     return `${value.slice(0, 10)} ${value.slice(11, 16)} UTC`;
   }
   return value;
+}
+
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+// "2026-11-26" -> "Thu 26". Read in UTC from the plan's date string, never from the
+// browser clock, so server and client render the same text. Anything else is shown raw.
+export function weekdayLabel(isoDate: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(isoDate)) return isoDate;
+  const d = new Date(`${isoDate}T00:00:00Z`);
+  if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== isoDate) return isoDate;
+  return `${WEEKDAYS[d.getUTCDay()]} ${d.getUTCDate()}`;
 }
 
 // Days outside the season have no Kc, bucket or irrigation to show.

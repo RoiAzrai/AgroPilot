@@ -17,7 +17,8 @@ import {
 } from "@/lib/bucket";
 import { ApiError } from "@/lib/errors";
 import { getBucketSuggestion } from "@/lib/planner";
-import { createFarm, createPlot, deletePlot } from "@/lib/registry";
+import { photoFailureToResult, validatePhotoFile } from "@/lib/photo";
+import { createFarm, createPlot, deletePlot, uploadPlotPhoto } from "@/lib/registry";
 import {
   farmSchema,
   firstIssuePerField,
@@ -113,4 +114,32 @@ export async function suggestBucketAction(
     if (e instanceof ApiError) return suggestionFailureToResult(e, planting);
     throw e;
   }
+}
+
+// The client checks and downscales first; everything is checked again here because a
+// Server Action is a public endpoint. A body over bodySizeLimit (next.config) throws
+// before this runs, which is why the client never sends more than 5 MB.
+export async function uploadPlotPhotoAction(
+  plotId: string,
+  formData: FormData,
+): Promise<ActionResult> {
+  // A non-UUID id never reaches the registry URL.
+  if (!isUuid(plotId)) {
+    return { ok: false, kind: "rejected", message: "This plot no longer exists.", plotGone: true };
+  }
+  const file = formData instanceof FormData ? formData.get("file") : null;
+  if (!(file instanceof File)) {
+    return { ok: false, kind: "validation", message: "Choose a photo to upload." };
+  }
+  const check = validatePhotoFile(file);
+  if (!check.ok) return { ok: false, kind: "validation", message: check.message };
+  try {
+    await uploadPlotPhoto(plotId, file);
+  } catch (e) {
+    if (e instanceof ApiError) return photoFailureToResult(e);
+    throw e;
+  }
+  revalidatePath(`/plots/${plotId}`);
+  revalidatePath("/");
+  return { ok: true, data: undefined };
 }
