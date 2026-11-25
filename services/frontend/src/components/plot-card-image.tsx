@@ -1,13 +1,7 @@
 import { FieldIllustration } from "@/components/field-illustration";
+import { PhotoImage } from "@/components/photo-image";
 
-export type PlotCardImageProps = {
-  // Reserved for stage 3 (real plot photos). Not read yet: the card always
-  // shows the illustration for now.
-  photoUrl?: string;
-};
-
-// eslint-disable-next-line @typescript-eslint/no-unused-vars -- photoUrl is used in stage 3
-export function PlotCardImage(props: PlotCardImageProps) {
+function NoPhoto() {
   return (
     <div className="relative h-[140px]">
       <FieldIllustration />
@@ -15,5 +9,25 @@ export function PlotCardImage(props: PlotCardImageProps) {
         No photo yet
       </span>
     </div>
+  );
+}
+
+// `photoUrl` only for plots the registry lists as having a photo. If the photo fails
+// to load, the card falls back to the illustration.
+export function PlotCardImage({
+  photoUrl,
+  plotName,
+}: {
+  photoUrl?: string;
+  plotName: string;
+}) {
+  if (!photoUrl) return <NoPhoto />;
+  return (
+    <PhotoImage
+      src={photoUrl}
+      alt={`Photo of plot ${plotName}`}
+      className="h-[140px]"
+      fallback={<NoPhoto />}
+    />
   );
 }

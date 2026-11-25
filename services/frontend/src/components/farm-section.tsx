@@ -2,6 +2,7 @@ import { AddPlotDialog } from "@/components/add-plot-dialog";
 import { ErrorPanel } from "@/components/error-panel";
 import { PlotCard } from "@/components/plot-card";
 import type { ApiError } from "@/lib/errors";
+import { photoUrl } from "@/lib/photo";
 import type { Catalogs, Farm, Plot } from "@/lib/types";
 
 export function FarmSection({
@@ -9,11 +10,13 @@ export function FarmSection({
   plots,
   error,
   catalogs,
+  photoIds,
 }: {
   farm: Farm;
   plots: Plot[];
   error?: ApiError;
   catalogs: Catalogs | null;
+  photoIds: ReadonlySet<string>;
 }) {
   const headingId = `farm-${farm.id}`;
   return (
@@ -50,7 +53,13 @@ export function FarmSection({
         ) : plots.length === 0 ? (
           <p className="text-muted-foreground">No plots yet.</p>
         ) : (
-          plots.map((plot) => <PlotCard key={plot.id} plot={plot} />)
+          plots.map((plot) => (
+            <PlotCard
+              key={plot.id}
+              plot={plot}
+              photoUrl={photoIds.has(plot.id) ? photoUrl(plot.id) : undefined}
+            />
+          ))
         )}
       </div>
     </section>

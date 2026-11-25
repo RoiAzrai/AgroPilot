@@ -11,7 +11,8 @@ import { dateBounds, isRealIsoDate } from "@/lib/bucket";
 import { ApiError } from "@/lib/errors";
 import { getPlan } from "@/lib/planner";
 import { isInSeason } from "@/lib/recommendation";
-import { getFarm, getPlot } from "@/lib/registry";
+import { photoUrl } from "@/lib/photo";
+import { getFarm, getPlot, getPlotPhotoIds } from "@/lib/registry";
 
 export const dynamic = "force-dynamic";
 
@@ -55,6 +56,16 @@ async function loadFarmName(farmId: string): Promise<string | null> {
   }
 }
 
+// A failed photo list only means "no photo": the card shows the illustration.
+async function loadHasPhoto(farmId: string, plotId: string): Promise<boolean> {
+  try {
+    const ids = await getPlotPhotoIds(farmId);
+    return Array.isArray(ids) && ids.includes(plotId);
+  } catch {
+    return false;
+  }
+}
+
 export default async function PlotPage({
   params,
   searchParams,
@@ -76,14 +87,23 @@ export default async function PlotPage({
     body = <ErrorPanel error={plotError!} what="plot" detailed />;
   } else {
     const plot = plotResult.value;
-    const farmName = await loadFarmName(plot.farm_id);
+    const [farmName, hasPhoto] = await Promise.all([
+      loadFarmName(plot.farm_id),
+      loadHasPhoto(plot.farm_id, plot.id),
+    ]);
+    const photo = hasPhoto ? photoUrl(plot.id) : undefined;
     const plan = planResult.status === "fulfilled" ? planResult.value : null;
     const today = plan ? plan.days[0] : null;
     // One computation for both bounds. Null only when the plan failed (no days to read).
     const bounds = today ? dateBounds(today.date, plot.planting_date) : null;
     body = (
       <>
-        <PlotHeader plot={plot} farmName={farmName} stage={today ? today.stage : null} />
+        <PlotHeader
+          plot={plot}
+          farmName={farmName}
+          stage={today ? today.stage : null}
+          photoUrl={photo}
+        />
         {/* DOM order is the phone order (Today, Plan, Photo). From md the grid areas put
             Photo beside Today and Plan under both. */}
         <div className="grid grid-cols-1 gap-3.5 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] md:gap-6 md:[grid-template-areas:'today_photo'_'plan_plan']">
@@ -115,7 +135,11 @@ export default async function PlotPage({
               <PlanTable days={plan.days} className="min-w-0 md:[grid-area:plan]" />
             </>
           )}
-          <PlotPhotoCard className="md:[grid-area:photo]" />
+          <PlotPhotoCard
+            photoUrl={photo}
+            plotName={plot.name}
+            className="md:[grid-area:photo]"
+          />
         </div>
         <div className="md:hidden">
           <DeletePlotButton

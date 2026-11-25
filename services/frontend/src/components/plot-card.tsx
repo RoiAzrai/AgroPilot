@@ -12,13 +12,13 @@ function cropLabel(cropId: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-export function PlotCard({ plot }: { plot: Plot }) {
+export function PlotCard({ plot, photoUrl }: { plot: Plot; photoUrl?: string }) {
   return (
     <Link
       href={`/plots/${plot.id}`}
       className="flex max-w-[340px] flex-[1_1_260px] flex-col overflow-hidden rounded-[14px] border border-border bg-surface text-foreground no-underline transition-shadow hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card"
     >
-      <PlotCardImage />
+      <PlotCardImage photoUrl={photoUrl} plotName={plot.name} />
       <div className="flex flex-col gap-2.5 px-[18px] pt-3.5 pb-4">
         <h3 className="text-[18px] font-semibold">{plot.name}</h3>
         <div className="flex min-h-[22px] flex-wrap items-center gap-2">

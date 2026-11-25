@@ -3,12 +3,19 @@ import { AddFarmDialog } from "@/components/add-farm-dialog";
 import { ErrorPanel } from "@/components/error-panel";
 import { FarmSection } from "@/components/farm-section";
 import { ApiError } from "@/lib/errors";
-import { listCrops, listEmitters, listFarms, listPlots, listSoils } from "@/lib/registry";
+import {
+  getPlotPhotoIds,
+  listCrops,
+  listEmitters,
+  listFarms,
+  listPlots,
+  listSoils,
+} from "@/lib/registry";
 import type { Catalogs, Farm, Plot } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
-type FarmPlots = { farm: Farm; plots: Plot[]; error?: ApiError };
+type FarmPlots = { farm: Farm; plots: Plot[]; error?: ApiError; photoIds: ReadonlySet<string> };
 
 type Loaded =
   | { ok: true; farms: FarmPlots[] }
@@ -22,15 +29,23 @@ async function load(): Promise<Loaded> {
     if (e instanceof ApiError) return { ok: false, error: e, what: "farms" };
     throw e;
   }
-  // One farm's plots failing must not hide the other farms.
-  const results = await Promise.allSettled(farms.map((f) => listPlots(f.id)));
+  // One farm's plots failing must not hide the other farms. Photo lists load in
+  // parallel; a failed one only means "no photos" for that farm.
+  const [results, photoResults] = await Promise.all([
+    Promise.allSettled(farms.map((f) => listPlots(f.id))),
+    Promise.allSettled(farms.map((f) => getPlotPhotoIds(f.id))),
+  ]);
   return {
     ok: true,
     farms: farms.map((farm, i) => {
       const result = results[i];
-      if (result.status === "fulfilled") return { farm, plots: result.value };
+      const photos = photoResults[i];
+      const photoIds = new Set(
+        photos.status === "fulfilled" && Array.isArray(photos.value) ? photos.value : [],
+      );
+      if (result.status === "fulfilled") return { farm, plots: result.value, photoIds };
       if (result.reason instanceof ApiError) {
-        return { farm, plots: [], error: result.reason };
+        return { farm, plots: [], error: result.reason, photoIds };
       }
       throw result.reason;
     }),
@@ -64,13 +79,14 @@ async function Farms() {
   if (data.farms.length === 0) {
     return <p className="text-muted-foreground">No farms yet.</p>;
   }
-  return data.farms.map(({ farm, plots, error }) => (
+  return data.farms.map(({ farm, plots, error, photoIds }) => (
     <FarmSection
       key={farm.id}
       farm={farm}
       plots={plots}
       error={error}
       catalogs={catalogs}
+      photoIds={photoIds}
     />
   ));
 }

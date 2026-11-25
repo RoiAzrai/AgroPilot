@@ -1,6 +1,6 @@
 import "server-only";
 import { config } from "./config";
-import { serviceFetch } from "./http";
+import { serviceFetch, serviceFetchBinary } from "./http";
 import type { PlotPayload } from "./schemas";
 import type { Crop, Emitter, Farm, Plot, Soil } from "./types";
 
@@ -38,3 +38,16 @@ export const createPlot = (payload: PlotPayload) =>
   call<Plot>("/v1/plots", { method: "POST", body: payload });
 export const deletePlot = (id: string) =>
   call<void>(`/v1/plots/${encodeURIComponent(id)}`, { method: "DELETE" });
+
+// Ids of the farm's plots that have a photo. Reads the registry database only, never S3.
+export const getPlotPhotoIds = async (farmId: string) =>
+  (await get<{ plot_ids: string[] }>("/v1/plot-photos", { farm_id: farmId })).plot_ids;
+
+// The photo bytes come from S3 through the registry, which retries S3: a longer timeout.
+export const getPlotPhoto = (plotId: string) =>
+  serviceFetchBinary({
+    service: "registry",
+    baseUrl: config.registryUrl,
+    path: `/v1/plots/${encodeURIComponent(plotId)}/photo`,
+    timeoutMs: config.photoTimeoutMs,
+  });
