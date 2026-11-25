@@ -134,10 +134,10 @@ export function PhotoCard({
         aria-hidden
         onChange={onPick}
       />
-      <div className="flex flex-wrap items-center justify-between gap-3 md:border-b md:border-border md:bg-card-band md:px-[18px] md:py-3.5">
+      <div className="hidden flex-wrap items-center justify-between gap-3 border-b border-border bg-card-band px-[18px] py-3.5 md:flex">
         <h2
           id="photo-heading"
-          className="sr-only font-heading text-[20px] font-semibold md:not-sr-only"
+          className="font-heading text-[20px] font-semibold"
         >
           Plot photo
         </h2>
@@ -146,7 +146,7 @@ export function PhotoCard({
           onClick={open}
           disabled={busy}
           aria-busy={busy}
-          className={`${BUTTON} hidden min-h-11 rounded-[10px] px-4 py-2.5 text-[14px] md:inline-flex`}
+          className={`${BUTTON} min-h-11 rounded-[10px] px-4 py-2.5 text-[14px]`}
         >
           <UploadIcon />
           {src ? "Replace photo" : "Upload photo"}
