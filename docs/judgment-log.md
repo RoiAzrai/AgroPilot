@@ -783,3 +783,22 @@ and why.
   - Deploy: an older registry refuses the new `.env` keys, so a rollback to a
     commit from before this feature needs the `AWS_*` lines removed first
     (deploy/README.md).
+
+## 51. registry-service: `GET /v1/plot-photos?farm_id=` lists plots that have a photo
+- **Decided (2026-11-25):** a read-only endpoint returning `{"plot_ids": [...]}`:
+  the plots of one farm that have a `plot_photos` row. One query (`plots` joined
+  to `plot_photos`, filtered by farm, `ORDER BY p.rowid`, so plot creation
+  order). No S3 call. `farm_id` is required; a missing or malformed value is
+  `422`. An unknown farm is `200` with `[]`, like `GET /v1/plots?farm_id=`.
+- **Why this over per-plot `GET /plots/{id}/photo`:** the home page would send
+  one request per plot and get a `404` for each plot without a photo (a 404
+  storm), and every request would also hit S3. One call answers for the whole
+  farm, and the plot JSON stays unchanged (judgment log 50).
+- **Known limits:**
+  - It says the database has a row, not that the S3 object exists. If the
+    object is missing, `GET /plots/{id}/photo` still returns `503`.
+  - It cannot tell the frontend when a photo changed. `plot_ids` has no
+    version or timestamp, and the photo GET is `no-store`.
+  - No pagination: the list is as long as the farm's photo count.
+  - A plot moved to another farm shows up under its current farm.
+

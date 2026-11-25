@@ -74,4 +74,15 @@ curl -o out.png http://127.0.0.1:8000/v1/plots/<id>/photo
 | No `file` field, empty file, type not `image/jpeg`, `image/png` or `image/webp`, or larger than 5 MiB. S3 is not called. | 422 | `VALIDATION` |
 | Any S3 error: no credentials, access denied, timeout, an object missing from the bucket. Logged; the stored key does not change. | 503 + `Retry-After` | `UNAVAILABLE` |
 
+`GET /v1/plot-photos?farm_id=<uuid>` says which plots of a farm have a photo, so a client does not request one photo per plot. It reads the database only and never calls S3, so it works while S3 is down. It returns `200` with the ids in plot creation order:
+
+```json
+{"plot_ids": ["c8f3d1b0-4d2e-5a1b-8b22-1d6e3f702002"]}
+```
+
+| Situation | Status | `code` |
+| --- | --- | --- |
+| A farm with no photos, or an unknown `farm_id` (same as `GET /v1/plots?farm_id=`) | 200 | `{"plot_ids": []}` |
+| `farm_id` missing or not a UUID | 422 | `VALIDATION` |
+
 Deleting a plot deletes its `plot_photos` row. The S3 object stays (see judgment log 50).

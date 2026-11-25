@@ -140,6 +140,10 @@ class PlotPhoto(BaseModel):
     content_type: str
 
 
+class PlotPhotoList(BaseModel):
+    plot_ids: list[UUID]
+
+
 class Crop(BaseModel):
     id: str
     name: str
