@@ -1,3 +1,4 @@
+import logging
 import sqlite3
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
@@ -7,9 +8,13 @@ from typing import Any
 import psycopg
 from fastapi import FastAPI, Request
 from sqlalchemy import Connection, Engine, create_engine, event, make_url
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.pool import NullPool
 
 from config import Settings, get_settings
+from seed_db import PHOTO_TABLE, build_metadata
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_DB_PATH = Path(__file__).parent / "registry.db"
 
@@ -125,10 +130,30 @@ def make_engine(settings: Settings) -> Engine:
     return engine
 
 
+def create_photo_table(engine: Engine) -> None:
+    """Create plot_photos if it is missing. Idempotent; never touches existing tables.
+
+    An unavailable database is logged, not fatal: the service starts as before and
+    answers 503, and the table is created on the next start.
+    """
+    table = build_metadata(engine.dialect.name).tables[PHOTO_TABLE]
+    try:
+        table.create(engine, checkfirst=True)
+    except DBAPIError as exc:
+        if not is_unavailable(exc.orig):
+            raise
+        logger.warning(
+            "Could not create %s at startup (database unavailable): %s %s",
+            PHOTO_TABLE, driver_code(exc.orig), exc.orig,
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Settings are read here, not at import, so tests can set the environment first.
-    app.state.engine = make_engine(get_settings())
+    app.state.settings = get_settings()
+    app.state.engine = make_engine(app.state.settings)
+    create_photo_table(app.state.engine)
     yield
     app.state.engine.dispose()
 

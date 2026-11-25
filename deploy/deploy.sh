@@ -28,7 +28,7 @@ record() { printf '%s %s %s\n' "$(date -u +%FT%TZ)" "$1" "$2" >> "$HISTORY"; }
 sanitize() { sed -E 's#(://[^:/@[:space:]]+:)[^@[:space:]]+@#\1***@#g'; }
 
 preflight() {
-  local problems=() cmd unit f avail p
+  local problems=() cmd unit f avail p key
   for cmd in git curl flock node npm sudo; do
     command -v "$cmd" >/dev/null 2>&1 || problems+=("missing command: $cmd")
   done
@@ -37,6 +37,11 @@ preflight() {
   for f in "$SVC/registry-service/.env" "$SVC/weather-service/.env" \
            "$SVC/planner-service/.env" "$SVC/frontend/.env.local"; do
     [[ -f $f ]] || problems+=("missing config file: $f")
+  done
+  # Required by registry-service for plot photos: without them it does not start.
+  for key in AWS_S3_BUCKET AWS_REGION; do
+    grep -Eq "^${key}=.+" "$SVC/registry-service/.env" 2>/dev/null \
+      || problems+=("missing $key in $SVC/registry-service/.env")
   done
   sudo -n true 2>/dev/null || problems+=("sudo needs a password")
   for unit in "${UNITS[@]}"; do

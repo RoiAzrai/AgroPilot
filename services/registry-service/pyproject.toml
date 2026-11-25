@@ -4,9 +4,11 @@ version = "0.1.0"
 description = "AgroPilot registry service."
 requires-python = ">=3.12"
 dependencies = [
+    "boto3~=1.44",
     "fastapi~=0.115",
     "psycopg[binary]~=3.2",
     "pydantic-settings~=2.6",
+    "python-multipart~=0.0.34",
     "sqlalchemy~=2.0",
     "uvicorn~=0.32",
 ]

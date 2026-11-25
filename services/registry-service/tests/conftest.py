@@ -2,6 +2,8 @@ import hashlib
 import subprocess
 from pathlib import Path
 
+import boto3
+import boto3.session
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import event
@@ -29,6 +31,31 @@ def force_sqlite(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # A developer's .env may point at PostgreSQL; tests must never use it.
     monkeypatch.setenv("DATABASE_URL", sqlite_url(tmp_path / "no-database.db"))
     assert get_settings().database_url.startswith("sqlite"), "tests must run on SQLite"
+
+
+@pytest.fixture(autouse=True)
+def aws_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Dummy settings for the required keys, and no way to find real credentials:
+    # no ~/.aws files, no instance metadata.
+    monkeypatch.setenv("AWS_S3_BUCKET", "test-bucket")
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", str(tmp_path / "no-credentials"))
+    monkeypatch.setenv("AWS_CONFIG_FILE", str(tmp_path / "no-config"))
+    monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
+    for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE"):
+        monkeypatch.delenv(key, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def no_real_s3(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A test that reaches real boto3 fails instead of calling AWS. Photo tests replace
+    routers.plots._s3_client with a fake."""
+
+    def blocked(*args, **kwargs):
+        raise AssertionError("tests must not create a real boto3 client")
+
+    monkeypatch.setattr(boto3, "client", blocked)
+    monkeypatch.setattr(boto3.session.Session, "client", blocked)
 
 
 @pytest.fixture

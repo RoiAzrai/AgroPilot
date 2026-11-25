@@ -311,3 +311,44 @@ def test_running_the_module_seeds_the_database(tmp_path, monkeypatch, capsys):
     conn = sqlite3.connect(path)
     assert conn.execute("SELECT COUNT(*) FROM plots").fetchone()[0] == 4
     conn.close()
+
+
+def test_seed_creates_an_empty_plot_photos_table(target):
+    assert seed_db.main([]) == 0
+    con = sqlite3.connect(target)
+    assert con.execute("SELECT COUNT(*) FROM plot_photos").fetchone()[0] == 0
+    con.close()
+
+
+def test_postgres_plot_photos_cascades_and_has_rowid():
+    table = seed_db.build_metadata("postgresql").tables[seed_db.PHOTO_TABLE]
+    ddl = str(CreateTable(table).compile(dialect=postgresql.dialect()))
+    assert "REFERENCES plots (id) ON DELETE CASCADE" in ddl
+    assert "rowid BIGINT GENERATED ALWAYS AS IDENTITY" in ddl
+    assert seed_db.PHOTO_TABLE not in seed_db.TABLES
+
+
+def test_reset_drops_plot_photos_too(target, tmp_path, capsys):
+    assert seed_db.main([]) == 0
+    con = sqlite3.connect(target)
+    con.execute(
+        "INSERT INTO plot_photos (plot_id, key, content_type)"
+        " VALUES ('c8f3d1b0-4d2e-5a1b-8b22-1d6e3f702002', 'k', 'image/png')"
+    )
+    con.commit()
+    con.close()
+    assert seed_db.main(["--reset", "--yes"]) == 0
+    con = sqlite3.connect(target)
+    assert con.execute("SELECT COUNT(*) FROM plot_photos").fetchone()[0] == 0
+    con.close()
+    assert _dump(target) == _reference_rows(tmp_path)
+
+
+def test_reset_of_a_database_from_before_plot_photos(target, tmp_path):
+    subprocess.run(["bash", str(SEED_SCRIPT), str(target)], check=True, capture_output=True)
+    _rename_farm(target)
+    assert seed_db.main(["--reset", "--yes"]) == 0
+    assert _dump(target) == _reference_rows(tmp_path)
+    con = sqlite3.connect(target)
+    assert con.execute("SELECT COUNT(*) FROM plot_photos").fetchone()[0] == 0
+    con.close()
