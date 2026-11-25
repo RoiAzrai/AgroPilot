@@ -117,7 +117,11 @@ build_frontend() {   # build_frontend <sha>
   fi
   if (( need_build )); then
     log "frontend: npm run build"
-    rm -f .next/.agropilot-tree
+    # Always build from a clean .next: building on top of the old one reused stale
+    # cached output and the server kept serving old CSS (observed 2026-11-25).
+    # This also removes the .agropilot-tree marker, so a failed build is never
+    # mistaken for an up-to-date one.
+    rm -rf "$fe/.next"
     NEXT_TELEMETRY_DISABLED=1 npm run build
     echo "$tree_hash" > .next/.agropilot-tree
   else
