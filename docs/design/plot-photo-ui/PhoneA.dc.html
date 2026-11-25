@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Phone A – recommendation first</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&amp;family=Inter:wght@400;500;600&amp;display=swap" rel="stylesheet">
+<style>
+body{margin:0}
+a{color:#2F4A32}a:hover{color:#1E3322}
+</style>
+</helmet>
+<div style="position: relative; width: 390px; height: 1240px; box-sizing: border-box; background: #F3EBDD; font-family: Inter, system-ui, sans-serif; color: #3B2A1C; overflow: hidden">
+
+  <header style="background: #2F4A32; color: #F3EBDD; padding: 12px 16px; display: flex; align-items: center; gap: 14px; font-size: 13px; font-weight: 500">
+    <span style="display: inline-flex; align-items: center; gap: 6px"><span aria-hidden="true" style="width: 9px; height: 9px; border-radius: 50%; background: #6FCF7F"></span>Registry</span>
+    <span style="display: inline-flex; align-items: center; gap: 6px"><span aria-hidden="true" style="width: 9px; height: 9px; border-radius: 50%; background: #6FCF7F"></span>Weather</span>
+    <span style="display: inline-flex; align-items: center; gap: 6px"><span aria-hidden="true" style="width: 9px; height: 9px; border-radius: 50%; background: #6FCF7F"></span>Planner</span>
+  </header>
+
+  <div style="padding: 8px 16px 24px; display: flex; flex-direction: column; gap: 14px">
+    <a href="#" style="align-self: flex-start; display: inline-flex; align-items: center; gap: 4px; font-size: 15px; font-weight: 500; text-decoration: none; min-height: 48px">
+      <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>
+      All farms
+    </a>
+
+    <div style="display: flex; align-items: center; gap: 12px">
+      <div style="width: 64px; height: 64px; border-radius: 12px; overflow: hidden; flex: none">
+        <svg aria-hidden="true" width="64" height="64" viewBox="0 0 140 140" preserveAspectRatio="xMidYMid slice"><rect width="140" height="140" fill="#EADFC8"/><circle cx="110" cy="34" r="14" fill="#D9B66A"/><path d="M0 72 Q40 50 80 66 T140 58 V140 H0Z" fill="#A3B57F"/><path d="M0 92 Q50 76 100 88 T140 84 V140 H0Z" fill="#6E8A4E"/><path d="M0 112 Q60 100 140 108 V140 H0Z" fill="#8B6B47"/></svg>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 2px; min-width: 0">
+        <span style="font-size: 12px; font-weight: 600; letter-spacing: 0.8px; text-transform: uppercase; color: #6B4F35">Jezreel Valley farm</span>
+        <h1 style="margin: 0; font-family: Fraunces, Georgia, serif; font-weight: 700; font-size: 30px; color: #2F4A32; line-height: 1.1">Valley block</h1>
+        <span style="font-size: 14px; color: #6B4F35">Tomato · Growing · 1,200 m²</span>
+      </div>
+    </div>
+
+    <section style="background: #FFFFFF; border: 1px solid #D9C7A8; border-radius: 16px; padding: 18px; display: flex; flex-direction: column; gap: 8px">
+      <span style="font-size: 12px; font-weight: 600; letter-spacing: 0.8px; text-transform: uppercase; color: #6B4F35">Today, 2026-11-25</span>
+      <span style="font-family: Fraunces, Georgia, serif; font-size: 36px; font-weight: 700; color: #2F4A32; line-height: 1.1">No irrigation today</span>
+      <span style="font-size: 16px">The soil has enough water for today.</span>
+      <div style="display: flex; align-items: center; gap: 8px; border-top: 1px solid #EFE4D2; padding-top: 6px; font-size: 14px; color: #6B4F35">
+        <span>Bucket: <strong style="color: #3B2A1C">100% (full)</strong></span>
+        <button style="margin-left: auto; background: #F3EBDD; border: 1px solid #D9C7A8; color: #2F4A32; border-radius: 10px; font: 600 15px Inter, sans-serif; min-height: 48px; padding: 0 16px">Change</button>
+      </div>
+    </section>
+
+    <section style="background: #FFFFFF; border: 1px solid #D9C7A8; border-radius: 16px; overflow: hidden">
+      <h2 style="margin: 0; padding: 14px 18px; font-family: Fraunces, Georgia, serif; font-weight: 600; font-size: 20px; background: #E8DAC0">Next 7 days</h2>
+      <sc-for list="{{days}}" as="d" hint-placeholder-count="3">
+        <div style="padding: 12px 18px; border-top: 1px solid #EFE4D2; display: flex; align-items: center; justify-content: space-between; gap: 10px">
+          <span style="font-size: 15px; font-weight: 600">{{d}}</span>
+          <span style="display: inline-block; width: 96px; height: 12px; border-radius: 6px; background: #C9D7BC"></span>
+        </div>
+      </sc-for>
+    </section>
+
+    <section style="background: #FBF6EC; border: 1px solid #D9C7A8; border-radius: 16px; overflow: hidden">
+      <div style="position: relative; height: 190px">
+        <svg aria-hidden="true" width="100%" height="190" viewBox="0 0 320 140" preserveAspectRatio="xMidYMid slice"><rect width="320" height="140" fill="#EADFC8"/><circle cx="262" cy="34" r="16" fill="#D9B66A"/><path d="M0 72 Q80 44 170 66 T320 58 V140 H0Z" fill="#A3B57F"/><path d="M0 92 Q110 74 210 88 T320 84 V140 H0Z" fill="#6E8A4E"/><path d="M0 112 Q120 100 320 108 V140 H0Z" fill="#8B6B47"/></svg>
+        <span style="position: absolute; top: 10px; left: 10px; background: rgba(251,246,236,0.94); color: #6B4F35; border-radius: 999px; padding: 4px 10px; font-size: 12px; font-weight: 600">No photo yet</span>
+      </div>
+      <div style="padding: 14px 18px; display: flex; flex-direction: column; gap: 6px">
+        <button style="display: inline-flex; align-items: center; justify-content: center; gap: 8px; background: #2F4A32; color: #FBF6EC; border: 0; border-radius: 12px; font: 600 16px Inter, sans-serif; min-height: 52px">
+          <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>
+          Take or upload photo
+        </button>
+        <span style="font-size: 12px; color: #6B4F35; text-align: center">JPEG, PNG or WebP, up to 5 MB</span>
+      </div>
+    </section>
+
+    <button style="background: transparent; color: #8A3B2E; border: 1.5px solid #8A3B2E; border-radius: 12px; font: 600 15px Inter, sans-serif; min-height: 48px">Delete plot</button>
+  </div>
+
+  <div aria-hidden="true" style="position: absolute; left: 0; top: 844px; width: 390px; border-top: 2px dashed #8A3B2E"></div>
+  <span style="position: absolute; right: 8px; top: 848px; background: #8A3B2E; color: #FFFFFF; font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 6px">End of first screen</span>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":1240}}'>
+class Component extends DCLogic {
+renderVals() {
+return { days: ['Today', 'Thu 26', 'Fri 27', 'Sat 28', 'Sun 29', 'Mon 30', 'Tue 1'] };
+}
+}
+</script>
+</body>
+</html>
