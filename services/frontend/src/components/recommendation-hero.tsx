@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { Clock } from "lucide-react";
 import {
   describeToday,
@@ -5,54 +6,54 @@ import {
 } from "@/lib/recommendation";
 import type { DayOut, Plot } from "@/lib/types";
 
+// Always a white card (design): the headline carries the decision, not a fill colour.
+// `children` is the bucket row, shown at the bottom of the card.
 export function RecommendationHero({
   today,
   plot,
   fetchedAt,
   planStale,
+  className = "",
+  children,
 }: {
   today: DayOut;
   plot: Plot;
   fetchedAt: string;
   planStale: boolean;
+  className?: string;
+  children?: ReactNode;
 }) {
   const rec = describeToday(today, plot);
-  const water = rec.kind === "water";
   const stale = today.stale || planStale;
 
   return (
     <section
       aria-labelledby="today-heading"
-      className={`flex flex-col gap-3 rounded-2xl p-5 sm:p-8 ${
-        water
-          ? "bg-primary text-primary-foreground"
-          : "bg-card ring-1 ring-foreground/15"
-      }`}
+      className={`flex flex-col gap-2 rounded-2xl border border-border bg-surface p-[18px] md:gap-3.5 md:p-6 ${className}`}
     >
       <h2
         id="today-heading"
-        className={`text-base font-semibold ${
-          water ? "text-primary-foreground/85" : "text-muted-foreground"
-        }`}
+        className="text-[12px] font-semibold tracking-[0.8px] text-muted-foreground uppercase md:tracking-[1px]"
       >
         {`Today, ${today.date}`}
       </h2>
-      <p className="text-4xl leading-[1.05] font-extrabold tracking-tight text-balance sm:text-6xl">
-        {rec.headline}
-      </p>
-      <p
-        className={`text-lg ${
-          water ? "text-primary-foreground/90" : "text-muted-foreground"
-        }`}
-      >
-        {rec.detail}
-      </p>
+      <div className="flex flex-col gap-2 md:gap-1.5">
+        <p
+          className={`font-heading text-[36px] leading-[1.1] font-bold text-balance md:text-[40px] ${
+            rec.kind === "ended" ? "text-muted-foreground" : "text-primary"
+          }`}
+        >
+          {rec.headline}
+        </p>
+        <p className="text-[16px] text-foreground md:text-[17px]">{rec.detail}</p>
+      </div>
       {stale && (
-        <p className="mt-1 flex items-center gap-2 text-sm font-medium">
+        <p className="flex items-center gap-2 text-[14px] font-medium text-muted-foreground">
           <Clock aria-hidden className="size-4 shrink-0" />
           Based on an old forecast (updated {formatFetchedAt(fetchedAt)})
         </p>
       )}
+      {children}
     </section>
   );
 }

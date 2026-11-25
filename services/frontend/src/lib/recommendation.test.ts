@@ -6,6 +6,7 @@ import {
   describeToday,
   formatFetchedAt,
   formatMinutes,
+  weekdayLabel,
 } from "./recommendation";
 import type { DayOut, Plot } from "./types";
 
@@ -39,7 +40,7 @@ test("describeToday: water in every growing stage", () => {
     const r = describeToday(day({ stage, run_minutes: 38, litres: 1234567 }));
     assert.equal(r.kind, "water");
     assert.equal(r.headline, "Water for 38 minutes");
-    assert.equal(r.detail, "About 1,234,567 litres, in total for this plot.");
+    assert.equal(r.detail, "About 1,234,567 litres");
   }
 });
 
@@ -48,7 +49,7 @@ test("describeToday: no irrigation while growing", () => {
     const r = describeToday(day({ stage, run_minutes: 0 }));
     assert.equal(r.kind, "skip");
     assert.equal(r.headline, "No irrigation today");
-    assert.equal(r.detail, "The soil still holds enough water.");
+    assert.equal(r.detail, "The soil has enough water for today.");
   }
 });
 
@@ -63,7 +64,7 @@ test("describeToday: ended wins over run_minutes", () => {
   const r = describeToday(day({ stage: "ended", run_minutes: 0 }), plot);
   assert.equal(r.kind, "ended");
   assert.equal(r.headline, "Season ended");
-  assert.equal(r.detail, "No more irrigation for this crop.");
+  assert.equal(r.detail, "This plot has finished its growing season.");
 });
 
 test("formatFetchedAt", () => {
@@ -124,4 +125,22 @@ test("cells: ended season gives null for run, litres, kc and bucket", () => {
   assert.equal(c.kc, null);
   assert.equal(c.bucket, null);
   assert.deepEqual(c.et0, { value: "2.7", unit: "mm" });
+});
+
+test("describeToday: water for 24 h", () => {
+  const r = describeToday(day({ stage: "mid", run_minutes: 1440, litres: 76800 }));
+  assert.equal(r.headline, "Water for 24 h");
+  assert.equal(r.detail, "About 76,800 litres");
+});
+
+test("weekdayLabel: weekday and day of month, in UTC", () => {
+  assert.equal(weekdayLabel("2026-11-26"), "Thu 26");
+  assert.equal(weekdayLabel("2026-12-01"), "Tue 1");
+  assert.equal(weekdayLabel("2024-02-29"), "Thu 29");
+});
+
+test("weekdayLabel: anything that is not a real date is shown raw", () => {
+  assert.equal(weekdayLabel("2026-02-30"), "2026-02-30");
+  assert.equal(weekdayLabel("tomorrow"), "tomorrow");
+  assert.equal(weekdayLabel("2026-11-26T10:00:00Z"), "2026-11-26T10:00:00Z");
 });

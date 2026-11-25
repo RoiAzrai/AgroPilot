@@ -27,7 +27,7 @@ export default function ErrorPage({
 
   return (
     <main className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-4 px-4 py-10 sm:py-14">
-      <h1 className="text-4xl font-extrabold tracking-tight sm:text-5xl">
+      <h1 className="font-heading text-4xl font-bold text-primary sm:text-5xl">
         Something went wrong
       </h1>
       <p className="max-w-prose text-lg text-muted-foreground">

@@ -23,6 +23,8 @@ const get = <T>(path: string, query?: Record<string, string | number>) =>
   call<T>(path, {}, query);
 
 export const listFarms = () => get<Farm[]>("/v1/farms");
+export const getFarm = (id: string) =>
+  get<Farm>(`/v1/farms/${encodeURIComponent(id)}`);
 export const listPlots = (farmId: string) =>
   get<Plot[]>("/v1/plots", { farm_id: farmId });
 export const getPlot = (id: string) =>

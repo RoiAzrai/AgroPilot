@@ -1,5 +1,5 @@
 // Generic field drawing shown where a plot has no photo. Decorative only.
-export function FieldIllustration({ height = 140 }: { height?: number }) {
+export function FieldIllustration({ height = 140 }: { height?: number | string }) {
   return (
     <svg
       aria-hidden

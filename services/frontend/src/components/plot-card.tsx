@@ -2,7 +2,7 @@ import { Suspense } from "react";
 import Link from "next/link";
 import { PlotCardImage } from "@/components/plot-card-image";
 import {
-  SeasonBadge,
+  PlotSeasonBadge,
   SeasonBadgeSkeleton,
 } from "@/components/season-badge";
 import type { Plot } from "@/lib/types";
@@ -26,7 +26,7 @@ export function PlotCard({ plot }: { plot: Plot }) {
             {cropLabel(plot.crop_id)}
           </span>
           <Suspense fallback={<SeasonBadgeSkeleton />}>
-            <SeasonBadge plotId={plot.id} />
+            <PlotSeasonBadge plotId={plot.id} />
           </Suspense>
         </div>
         <div className="flex gap-4 border-t border-line pt-2.5 text-[14px] text-muted-foreground">

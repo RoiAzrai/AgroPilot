@@ -16,14 +16,19 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { Button } from "@/components/ui/button";
+
+// Outline button in the design's red (#8A3B2E). `className` sets the size per placement.
+const TRIGGER =
+  "inline-flex items-center justify-center rounded-[10px] border-[1.5px] border-destructive bg-transparent px-4 font-semibold text-destructive transition-colors hover:bg-destructive/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background";
 
 export function DeletePlotButton({
   plotId,
   plotName,
+  className = "",
 }: {
   plotId: string;
   plotName: string;
+  className?: string;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -56,7 +61,7 @@ export function DeletePlotButton({
       }}
     >
       <AlertDialogTrigger
-        render={<Button variant="destructive" className="h-11 min-h-11 px-4" />}
+        render={<button type="button" className={`${TRIGGER} ${className}`} />}
       >
         Delete plot
       </AlertDialogTrigger>

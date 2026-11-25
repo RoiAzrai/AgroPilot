@@ -29,18 +29,9 @@ const ICON = {
   ended: EndedIcon,
 } satisfies Record<SeasonKind, unknown>;
 
-// No badge when the planner fails or answers something unexpected:
-// never a zero, never a guess.
-export async function SeasonBadge({ plotId }: { plotId: string }) {
-  let stage: string | undefined;
-  try {
-    const plan = await getPlan(plotId, { days: 1, bucketStart: 1 });
-    stage = plan.days[0]?.stage;
-  } catch (e) {
-    if (e instanceof ApiError) return null;
-    throw e;
-  }
-  const season = stage === undefined ? null : describeSeason(stage);
+// Presentational: the caller gives the stage it already has. Unknown stage = no badge.
+export function SeasonBadge({ stage }: { stage: string }) {
+  const season = describeSeason(stage);
   if (!season) return null;
 
   const Icon = ICON[season.kind];
@@ -56,6 +47,20 @@ export async function SeasonBadge({ plotId }: { plotId: string }) {
       {season.label}
     </span>
   );
+}
+
+// Home plot card: fetches its own one-day plan. No badge when the planner fails or
+// answers something unexpected: never a zero, never a guess.
+export async function PlotSeasonBadge({ plotId }: { plotId: string }) {
+  let stage: string | undefined;
+  try {
+    const plan = await getPlan(plotId, { days: 1, bucketStart: 1 });
+    stage = plan.days[0]?.stage;
+  } catch (e) {
+    if (e instanceof ApiError) return null;
+    throw e;
+  }
+  return stage === undefined ? null : <SeasonBadge stage={stage} />;
 }
 
 export function SeasonBadgeSkeleton() {

@@ -5,8 +5,6 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-  --color-status-up: var(--status-up);
-  --color-status-down: var(--status-down);
   --color-card-band: var(--card-band);
   --color-surface: var(--surface);
   --color-line: var(--line);
@@ -89,8 +87,6 @@
   /* Status dots only: never use as text on a light background. */
   --dot-up: #6FCF7F;
   --dot-down: #E5484D;
-  --status-up: #2F4A32;
-  --status-down: #8A3B2E;
   --chart-1: #0b5d6b;
   --chart-2: #2d6a34;
   --chart-3: #6b7a3a;
